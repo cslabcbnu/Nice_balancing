@@ -959,11 +959,6 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	nodemask_t allowed_mask;
 
 	struct migration_target_control mtc = {
-		/*
-		 * Allocate from 'node', or fail quickly and quietly.
-		 * When this happens, 'page' will likely just be discarded
-		 * instead of migrated.
-		 */
 		.gfp_mask = (GFP_HIGHUSER_MOVABLE & ~__GFP_RECLAIM) | __GFP_NOWARN |
 			__GFP_NOMEMALLOC | GFP_NOWAIT,
 		.nid = target_nid,
@@ -978,12 +973,11 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 
 	node_get_allowed_targets(pgdat, &allowed_mask);
 
-	/*
-	 * hayong - check folio's nice value using last_cpu_pid
-	 */
+	/* hayong - check folio's nice value */
 	struct folio *folio;
 	list_for_each_entry(folio, demote_folios, lru) {
-		struct task_struct *task = pid_task(find_vpid(folio->last_cpu_pid), PIDTYPE_PID);
+		int cpupid = folio_last_cpupid(folio);
+		struct task_struct *task = pid_task(find_vpid(cpupid), PIDTYPE_PID);
 
 		if (task) {
 			printk(KERN_INFO "[demote] folio=%p pid=%d comm=%s nice=%d\n",
