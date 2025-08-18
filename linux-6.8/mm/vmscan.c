@@ -979,33 +979,19 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	node_get_allowed_targets(pgdat, &allowed_mask);
 
 	/*
-     * hayong - check folio's nice value
-     */
-    list_for_each_entry(folio, demote_folios, lru) {
-        struct page *page = folio_page(folio, 0);
-        struct page_vma_mapped_walk pvmw;
-        int walked = 0;
+	 * hayong - check folio's nice value using last_cpu_pid
+	 */
+	struct folio *folio;
+	list_for_each_entry(folio, demote_folios, lru) {
+		struct task_struct *task = pid_task(find_vpid(folio->last_cpu_pid), PIDTYPE_PID);
 
-        for_each_page_vma(page, &pvmw, 0) { // 커널 매크로를 사용
-            struct vm_area_struct *vma = pvmw.vma;
-            struct task_struct *task = NULL;
-
-            rcu_read_lock();
-            if (vma && vma->vm_mm && vma->vm_mm->owner)
-                task = pid_task(find_vpid(vma->vm_mm->owner), PIDTYPE_PID);
-            rcu_read_unlock();
-
-            if (task) {
-                printk(KERN_INFO "[demote] folio=%p pid=%d comm=%s nice=%d\n",
-                       folio, task->pid, task->comm, task_nice(task));
-                walked = 1;
-                break; // 가장 최근 접근한 태스크 하나만 확인
-            }
-        }
-
-        if (!walked)
-            printk(KERN_INFO "[demote] folio=%p (no mapped task)\n", folio);
-    }
+		if (task) {
+			printk(KERN_INFO "[demote] folio=%p pid=%d comm=%s nice=%d\n",
+			       folio, task->pid, task->comm, task_nice(task));
+		} else {
+			printk(KERN_INFO "[demote] folio=%p (no recent task)\n", folio);
+		}
+	}
 
 	/* Demotion ignores all cpuset and mempolicy settings */
 	migrate_pages(demote_folios, alloc_demote_folio, NULL,
