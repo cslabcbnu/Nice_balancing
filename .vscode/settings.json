@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "blkdev.h": "c",
+        "delayacct.h": "c"
+    }
+}

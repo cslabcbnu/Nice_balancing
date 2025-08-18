@@ -70,6 +70,12 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
 
+/*
+	hayong - check folio's nice value
+*/
+#include <linux/page-flags.h>
+
+
 struct scan_control {
 	/* How many pages shrink_list() should reclaim */
 	unsigned long nr_to_reclaim;
@@ -976,7 +982,7 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
      * hayong - check folio's nice value
      */
     list_for_each_entry(folio, demote_folios, lru) {
-        struct page *page = folio_page(folio);
+        struct page *page = folio_page(folio, 0);
         struct page_vma_mapped_walk pvmw;
         int walked = 0;
 
