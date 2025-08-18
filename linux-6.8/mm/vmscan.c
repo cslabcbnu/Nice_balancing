@@ -972,6 +972,29 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 
 	node_get_allowed_targets(pgdat, &allowed_mask);
 
+	/*
+		hayong - check folio's nice value
+	*/
+
+	list_for_each_entry(folio, demote_folios, lru) {
+        struct page_vma_mapped_walk pvmw = {
+            .page = &folio->page,
+        };
+        if (page_vma_mapped_walk(&pvmw)) {
+            struct vm_area_struct *vma = pvmw.vma;
+            struct task_struct *task = vma->vm_mm ? get_mm_task(vma->vm_mm) : NULL;
+            if (task) {
+                printk(KERN_INFO "[demote] folio=%p pid=%d comm=%s nice=%d\n",
+                       folio, task->pid, task->comm, task_nice(task));
+            } else {
+                printk(KERN_INFO "[demote] folio=%p (no task)\n", folio);
+            }
+            page_vma_mapped_walk_done(&pvmw);
+        } else {
+            printk(KERN_INFO "[demote] folio=%p (unmapped)\n", folio);
+        }
+    }
+
 	/* Demotion ignores all cpuset and mempolicy settings */
 	migrate_pages(demote_folios, alloc_demote_folio, NULL,
 		      (unsigned long)&mtc, MIGRATE_ASYNC, MR_DEMOTION,
