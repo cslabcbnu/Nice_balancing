@@ -973,26 +973,32 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	node_get_allowed_targets(pgdat, &allowed_mask);
 
 	/*
-		hayong - check folio's nice value
-	*/
+     * hayong - check folio's nice value
+     */
+    list_for_each_entry(folio, demote_folios, lru) {
+        struct page *page = folio_page(folio);
+        struct page_vma_mapped_walk pvmw;
+        int walked = 0;
 
-	list_for_each_entry(folio, demote_folios, lru) {
-        struct page_vma_mapped_walk pvmw = {
-            .page = &folio->page,
-        };
-        if (page_vma_mapped_walk(&pvmw)) {
+        for_each_page_vma(page, &pvmw, 0) { // 커널 매크로를 사용
             struct vm_area_struct *vma = pvmw.vma;
-            struct task_struct *task = vma->vm_mm ? get_mm_task(vma->vm_mm) : NULL;
+            struct task_struct *task = NULL;
+
+            rcu_read_lock();
+            if (vma && vma->vm_mm && vma->vm_mm->owner)
+                task = pid_task(find_vpid(vma->vm_mm->owner), PIDTYPE_PID);
+            rcu_read_unlock();
+
             if (task) {
                 printk(KERN_INFO "[demote] folio=%p pid=%d comm=%s nice=%d\n",
                        folio, task->pid, task->comm, task_nice(task));
-            } else {
-                printk(KERN_INFO "[demote] folio=%p (no task)\n", folio);
+                walked = 1;
+                break; // 가장 최근 접근한 태스크 하나만 확인
             }
-            page_vma_mapped_walk_done(&pvmw);
-        } else {
-            printk(KERN_INFO "[demote] folio=%p (unmapped)\n", folio);
         }
+
+        if (!walked)
+            printk(KERN_INFO "[demote] folio=%p (no mapped task)\n", folio);
     }
 
 	/* Demotion ignores all cpuset and mempolicy settings */
