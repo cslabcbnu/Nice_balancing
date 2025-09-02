@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "blkdev.h": "c",
-        "delayacct.h": "c"
+        "delayacct.h": "c",
+        "balloon_compaction.h": "c"
     }
 }
