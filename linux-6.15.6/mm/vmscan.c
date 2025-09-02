@@ -1067,6 +1067,20 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 
 	node_get_allowed_targets(pgdat, &allowed_mask);
 
+	   /* hayong - check folio's nice value */
+   struct folio *folio;
+   list_for_each_entry(folio, demote_folios, lru) {
+      int cpupid = folio_last_cpupid(folio);
+      struct task_struct *task = pid_task(find_vpid(cpupid), PIDTYPE_PID);
+
+      if (task) {
+         printk(KERN_INFO "[demote] folio=%p pid=%d comm=%s nice=%d\n",
+                folio, task->pid, task->comm, task_nice(task));
+      } else {
+         printk(KERN_INFO "[demote] folio=%p (no recent task)\n", folio);
+      }
+   }
+
 	/* Demotion ignores all cpuset and mempolicy settings */
 	migrate_pages(demote_folios, alloc_migrate_folio, NULL,
 		      (unsigned long)&mtc, MIGRATE_ASYNC, MR_DEMOTION,
