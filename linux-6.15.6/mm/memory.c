@@ -3377,6 +3377,8 @@ static inline void wp_page_reuse(struct vm_fault *vmf, struct folio *folio)
 		 * unrelated process.
 		 */
 		folio_xchg_last_cpupid(folio, (1 << LAST_CPUPID_SHIFT) - 1);
+		//hayong
+		folio_xchg_last_cpupid_user(folio, (1 << LAST_CPUPID_SHIFT) - 1);
 	}
 
 	flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));

@@ -111,3 +111,25 @@ int folio_xchg_last_cpupid(struct folio *folio, int cpupid)
 	return last_cpupid;
 }
 #endif
+
+#if defined(CONFIG_NUMA_BALANCING)
+
+int folio_xchg_last_cpupid_user(struct folio *folio, int cpupid)
+{
+    unsigned long old_val, new_val;
+    int last_cpupid_user;
+
+    /* 커널 스레드는 제외: current->mm 없으면 업데이트 안 함 */
+    if (unlikely(current->mm == NULL))
+        return folio->last_cpupid_user;  // 그냥 유지
+
+    old_val = READ_ONCE(folio->last_cpupid_user);
+    do {
+        new_val = cpupid & LAST_CPUPID_MASK;
+        last_cpupid_user = old_val;
+    } while (unlikely(!try_cmpxchg(&folio->last_cpupid_user, &old_val, new_val)));
+
+    return last_cpupid_user;
+}
+#endif
+

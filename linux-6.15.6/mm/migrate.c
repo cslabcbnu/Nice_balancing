@@ -704,6 +704,19 @@ void folio_migrate_flags(struct folio *newfolio, struct folio *folio)
 			cpupid = -1;
 	}
 	folio_xchg_last_cpupid(newfolio, cpupid);
+	//hayong
+	if (current->mm) {
+    	int last_userid = folio_xchg_last_cpupid_user(folio, -1);
+
+    	if (sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) {
+        	bool f_toptier = node_is_toptier(folio_nid(folio));
+        	bool t_toptier = node_is_toptier(folio_nid(newfolio));
+        	if (f_toptier != t_toptier)
+            	last_userid = -1;
+    	}
+    	folio_xchg_last_cpupid_user(newfolio, last_userid);
+	}
+
 
 	folio_migrate_ksm(newfolio, folio);
 	/*

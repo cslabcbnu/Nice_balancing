@@ -211,6 +211,7 @@ struct page {
 
 #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
 	int _last_cpupid;
+	int _last_cpupid_user;
 #endif
 
 #ifdef CONFIG_KMSAN
@@ -417,6 +418,7 @@ struct folio {
 #endif
 #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
 			int _last_cpupid;
+			int _last_cpupid_user;
 #endif
 	/* private: the union with struct page is transitional */
 		};
@@ -501,6 +503,7 @@ FOLIO_MATCH(virtual, virtual);
 #endif
 #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
 FOLIO_MATCH(_last_cpupid, _last_cpupid);
+FOLIO_MATCH(_last_cpupid_user, _last_cpupid_user);
 #endif
 #undef FOLIO_MATCH
 #define FOLIO_MATCH(pg, fl)						\

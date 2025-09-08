@@ -1805,6 +1805,21 @@ static inline void page_cpupid_reset_last(struct page *page)
 {
 	page->_last_cpupid = -1 & LAST_CPUPID_MASK;
 }
+
+static inline int folio_xchg_last_cpupid_user(struct folio *folio, int cpupid)
+{
+    return xchg(&folio->_last_cpupid_user, cpupid & LAST_CPUPID_MASK);
+}
+
+static inline int folio_last_cpupid_user(struct folio *folio)
+{
+    return folio->_last_cpupid_user;
+}
+
+static inline void page_cpupid_reset_last_user(struct page *page)
+{
+    page->_last_cpupid_user = -1 & LAST_CPUPID_MASK;
+}
 #else
 static inline int folio_last_cpupid(struct folio *folio)
 {
@@ -1816,6 +1831,18 @@ int folio_xchg_last_cpupid(struct folio *folio, int cpupid);
 static inline void page_cpupid_reset_last(struct page *page)
 {
 	page->flags |= LAST_CPUPID_MASK << LAST_CPUPID_PGSHIFT;
+}
+
+int folio_xchg_last_cpupid_user(struct folio *folio, int cpupid);
+
+static inline int folio_last_cpupid_user(struct folio *folio)
+{
+    return (folio->last_cpupid_user >> LAST_CPUPID_PGSHIFT) & LAST_CPUPID_MASK;
+}
+
+static inline void page_cpupid_reset_last_user(struct page *page)
+{
+    folio->last_cpupid_user = -1 & LAST_CPUPID_MASK;
 }
 #endif /* LAST_CPUPID_NOT_IN_PAGE_FLAGS */
 
