@@ -30,6 +30,9 @@
 
 #define INIT_PASID	0
 
+//hayong
+#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
+
 struct address_space;
 struct mem_cgroup;
 

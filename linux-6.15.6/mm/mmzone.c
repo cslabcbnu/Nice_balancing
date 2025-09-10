@@ -9,6 +9,8 @@
 #include <linux/stddef.h>
 #include <linux/mm.h>
 #include <linux/mmzone.h>
+//hayong
+#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
 
 struct pglist_data *first_online_pgdat(void)
 {
@@ -112,7 +114,7 @@ int folio_xchg_last_cpupid(struct folio *folio, int cpupid)
 }
 #endif
 
-#if defined(CONFIG_NUMA_BALANCING)
+#if defined(CONFIG_NUMA_BALANCING) && defined(LAST_CPUPID_NOT_IN_PAGE_FLAGS)
 
 int folio_xchg_last_cpupid_user(struct folio *folio, int cpupid)
 {

@@ -48,6 +48,8 @@
 #include <asm/tlbflush.h>
 
 #include <trace/events/migrate.h>
+//hayong
+#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
 
 #include "internal.h"
 

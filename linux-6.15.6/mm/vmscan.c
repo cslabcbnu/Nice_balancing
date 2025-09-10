@@ -68,6 +68,9 @@
 #include "internal.h"
 #include "swap.h"
 
+//hayong
+#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
 

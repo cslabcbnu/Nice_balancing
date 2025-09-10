@@ -53,6 +53,8 @@
 #include <asm/switch_to.h>
 
 #include <uapi/linux/sched/types.h>
+//hayong
+#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
 
 #include "sched.h"
 #include "stats.h"

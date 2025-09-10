@@ -34,6 +34,9 @@
 #include <linux/cacheinfo.h>
 #include <linux/rcuwait.h>
 
+//hayong
+#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
+
 struct mempolicy;
 struct anon_vma;
 struct anon_vma_chain;

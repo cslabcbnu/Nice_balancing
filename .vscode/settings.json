@@ -3,6 +3,8 @@
         "blkdev.h": "c",
         "delayacct.h": "c",
         "balloon_compaction.h": "c",
-        "mm.h": "c"
+        "mm.h": "c",
+        "vmalloc.h": "c",
+        "cputime.h": "c"
     }
 }
