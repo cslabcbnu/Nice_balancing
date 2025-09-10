@@ -1070,7 +1070,7 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	   /* hayong - check folio's nice value */
    	struct folio *folio;
 	list_for_each_entry(folio, demote_folios, lru) {
-    int pid = cpupid_to_pid(folio_last_cpupid(folio));  // PID만 추출
+    int pid = cpupid_to_pid(folio_last_cpupid_nice(folio));  // PID만 추출
     struct task_struct *task = pid_task(find_vpid(pid), PIDTYPE_PID);
 
     if (task) {
