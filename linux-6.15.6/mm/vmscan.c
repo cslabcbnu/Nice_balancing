@@ -1072,17 +1072,23 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 
 	   /* hayong - check folio's nice value */
    	struct folio *folio;
-	list_for_each_entry(folio, demote_folios, lru) {
-    int pid = cpupid_to_pid(folio_last_cpupid_user(folio));  // PID만 추출
-    struct task_struct *task = pid_task(find_vpid(pid), PIDTYPE_PID);
+	list_for_each_entry(folio, demote_folios, lru) 
+	{
+		//hayong
+		int cpupid = folio_last_cpupid_user(folio);
+   	 	int pid = cpupid_to_pid(cpupid);  // PID만 추출
+		printk(KERN_INFO "[demote] folio_last_cpupid_user= %d\n", cpupid);
+    	struct task_struct *task = pid_task(find_vpid(pid), PIDTYPE_PID);
 
-    if (task) {
-        printk(KERN_INFO "[demote] folio=%p pid=%d comm=%s nice=%d\n",
-               folio, task->pid, task->comm, task_nice(task));
-    } else {
-        printk(KERN_INFO "[demote] folio=%p (no recent task)\n", folio);
-    }
-}
+    	if (task) 
+		{
+        	printk(KERN_INFO "[demote] folio=%p pid=%d comm=%s nice=%d\n", folio, task->pid, task->comm, task_nice(task));
+		}
+		else 
+		{
+        	printk(KERN_INFO "[demote] folio=%p (no recent task)\n", folio);
+		}
+	}
 
 	/* Demotion ignores all cpuset and mempolicy settings */
 	migrate_pages(demote_folios, alloc_migrate_folio, NULL,
