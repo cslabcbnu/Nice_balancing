@@ -127,7 +127,7 @@ int folio_xchg_last_cpupid_user(struct folio *folio, int cpupid)
 
     old_val = READ_ONCE(folio->_last_cpupid_user);
     do {
-        new_val = cpupid & LAST_CPUPID_MASK;
+        new_val = cpupid;
         last_cpupid_user = old_val;
     } while (unlikely(!try_cmpxchg(&folio->_last_cpupid_user, &old_val, new_val)));
 
