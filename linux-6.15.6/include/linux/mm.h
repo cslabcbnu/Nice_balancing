@@ -1809,7 +1809,7 @@ static inline void page_cpupid_reset_last(struct page *page)
 	page->_last_cpupid = -1 & LAST_CPUPID_MASK;
 }
 //hayong
-static inline int folio_xchg_last_cpupid_user(struct folio *folio, int cpupid);
+inline int folio_xchg_last_cpupid_user(struct folio *folio, int cpupid);
 
 static inline int folio_last_cpupid_user(struct folio *folio)
 {
