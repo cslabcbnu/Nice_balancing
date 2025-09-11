@@ -1076,12 +1076,7 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	{
 		//hayong
 		int user_pid = folio_last_user_pid(folio);
-		if(user_pid > 0)
-		{
-			printk(KERN_INFO "[demote] folio_last_user_pid= %d\n", user_pid);
-		}
     	struct task_struct *task = pid_task(find_vpid(user_pid), PIDTYPE_PID);
-
     	if (task) 
 		{
         	printk(KERN_INFO "[demote] folio=%p pid=%d comm=%s nice=%d\n", folio, task->pid, task->comm, task_nice(task));
