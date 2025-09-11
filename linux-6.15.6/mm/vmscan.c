@@ -1075,10 +1075,9 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	list_for_each_entry(folio, demote_folios, lru) 
 	{
 		//hayong
-		int cpupid = folio_last_cpupid_user(folio);
-		printk(KERN_INFO "[demote] folio_last_cpupid_user= %d\n", cpupid);
-   	 	int pid = cpupid_to_pid(cpupid);  // PID만 추출
-    	struct task_struct *task = pid_task(find_vpid(pid), PIDTYPE_PID);
+		int user_pid = folio_last_user_pid(folio);
+		printk(KERN_INFO "[demote] folio_last_user_pid= %d\n", user_pid);
+    	struct task_struct *task = pid_task(find_vpid(user_pid), PIDTYPE_PID);
 
     	if (task) 
 		{

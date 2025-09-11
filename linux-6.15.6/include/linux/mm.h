@@ -1809,16 +1809,19 @@ static inline void page_cpupid_reset_last(struct page *page)
 	page->_last_cpupid = -1 & LAST_CPUPID_MASK;
 }
 //hayong
-inline int folio_xchg_last_cpupid_user(struct folio *folio, int cpupid);
-
-static inline int folio_last_cpupid_user(struct folio *folio)
+static inline int folio_xchg_last_user_pid(struct folio *folio, int pid);
 {
-    return folio->_last_cpupid_user;
+	return xchg(&folio->_last_user_pid, pid);
 }
 
-static inline void page_cpupid_reset_last_user(struct page *page)
+static inline int folio_last_user_pid(struct folio *folio)
 {
-    page->_last_cpupid_user = -1 & LAST_CPUPID_MASK;
+    return folio->_last_user_pid;
+}
+
+static inline void page_user_pid_reset_last(struct page *page)
+{
+    page->_last_user_pid = -1;
 }
 #else
 static inline int folio_last_cpupid(struct folio *folio)

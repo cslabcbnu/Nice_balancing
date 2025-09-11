@@ -1968,8 +1968,7 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
 	last_cpupid = folio_xchg_last_cpupid(folio, this_cpupid);
 	//hayong
 	if (likely(current->mm)) {
-		this_cpupid = cpu_pid_to_cpupid(dst_cpu, current->pid);
-    	folio_xchg_last_cpupid_user(folio, this_cpupid);
+		folio_xchg_last_user_pid(folio, current->pid);
 	}
 
 
