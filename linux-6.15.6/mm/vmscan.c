@@ -1038,6 +1038,50 @@ struct folio *alloc_migrate_folio(struct folio *src, unsigned long private)
 	return alloc_migration_target(src, (unsigned long)mtc);
 }
 
+static void sort_folio_list_by_nice(struct list_head *head)
+{
+    struct list_head sorted;
+    struct folio *folio, *tmp;
+
+    INIT_LIST_HEAD(&sorted);
+
+    list_for_each_entry_safe(folio, tmp, head, lru) {
+        list_del(&folio->lru);
+        int nice_val = -1; // 기본값
+
+        int user_pid = folio_last_user_pid(folio);
+        struct task_struct *task = pid_task(find_vpid(user_pid), PIDTYPE_PID);
+        if (task)
+            nice_val = task_nice(task);
+
+        // 삽입 정렬: sorted 리스트에서 적절한 위치 찾기
+        struct folio *iter;
+        bool inserted = false;
+        list_for_each_entry(iter, &sorted, lru) {
+            int iter_nice_val = -1;
+            int iter_user_pid = folio_last_user_pid(iter);
+            struct task_struct *iter_task = pid_task(find_vpid(iter_user_pid), PIDTYPE_PID);
+            if (iter_task)
+                iter_nice_val = task_nice(iter_task);
+
+            if (nice_val < iter_nice_val) {
+                list_add_tail(&folio->lru, &iter->lru);
+                inserted = true;
+                break;
+            }
+        }
+
+        if (!inserted) {
+            // 맨 끝에 추가
+            list_add_tail(&folio->lru, &sorted);
+        }
+    }
+
+    // 정렬 완료한 리스트를 원본 head에 복사
+    INIT_LIST_HEAD(head);
+    list_splice_tail(&sorted, head);
+}
+
 /*
  * Take folios on @demote_folios and attempt to demote them to another node.
  * Folios which are not demoted are left on @demote_folios.
@@ -1071,6 +1115,8 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	node_get_allowed_targets(pgdat, &allowed_mask);
 
 	   /* hayong - check folio's nice value */
+	sort_folio_list_by_nice(demote_folios);
+	
    	struct folio *folio;
 	list_for_each_entry(folio, demote_folios, lru) 
 	{
