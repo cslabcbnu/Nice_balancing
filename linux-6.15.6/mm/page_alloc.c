@@ -3633,6 +3633,10 @@ check_alloc_wmark:
 		if (!zone_watermark_fast(zone, order, mark,
 				       ac->highest_zoneidx, alloc_flags,
 				       gfp_mask)) {
+
+						if (!current_is_kswapd() && current->mm) {
+							printk("[CXL-TRACE] Low watermark hit: PID:%d (%s) NICE:%d order:%u\n", current->pid, current->comm, task_nice(current), order);
+						}
 			int ret;
 
 			if (cond_accept_memory(zone, order, alloc_flags))
@@ -4451,6 +4455,11 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 		 */
 		WARN_ON_ONCE(current->flags & PF_MEMALLOC);
 	}
+
+	if (current->mm)
+		printk("[CXL-TRACE] PID:%d (%s) NICE:%d requests order:%u pages (~%lu KB)\n", current->pid, current->comm, task_nice(current), order, (PAGE_SIZE << order) / 1024);
+	
+
 
 restart:
 	compaction_retries = 0;
