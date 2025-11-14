@@ -1156,94 +1156,80 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
     struct lruvec *lruvec;
     struct folio *folio, *next;
     LIST_HEAD(demote_folios);
-    
+
     unsigned long collected = 0;
-    int nr_isolated = 0;
     unsigned long nr_pages_target = nr_pages_requested;
-    
     struct zone *zone;
-    
+
     if (!pgdat)
         return;
-    
+
     zone = &pgdat->node_zones[ZONE_NORMAL];
     lruvec = mem_cgroup_lruvec(NULL, pgdat);
     if (!lruvec || !zone)
         return;
-    
+
     spin_lock_irq(&lruvec->lru_lock);
-    // 1) Inactive Anonymous pages 스캔
-    list_for_each_entry_safe(folio, next,
-                            &lruvec->lists[LRU_INACTIVE_ANON],
-                            lru) {
-        unsigned long folio_pages;
-        if (collected >= nr_pages_target)
-            break;
-        if (!folio_trylock(folio))
-            continue;
-        if (!folio_evictable(folio)) {
-            folio_unlock(folio);
-            continue;
-        }
-        if (folio_maybe_dma_pinned(folio)) {
-            folio_unlock(folio);
-            continue;
-        }
-        folio_pages = folio_nr_pages(folio);
-        unsigned long remaining = nr_pages_target - collected;
-        if (folio_pages > remaining) {
-            folio_unlock(folio);
-            break;
-        }
-        list_add(&folio->lru, &demote_folios);
-        nr_isolated++;
-        collected += folio_pages;
-        folio_unlock(folio);
-    }
-    // 2) Inactive File pages도 필요하면 추가 스캔
-    if (collected < nr_pages_target) {
-        list_for_each_entry_safe(folio, next,
-                                &lruvec->lists[LRU_INACTIVE_FILE],
-                                lru) {
+
+    /* 1) Inactive + Active Anonymous pages 스캔 */
+    for (int lru_type = LRU_INACTIVE_ANON; lru_type <= LRU_ACTIVE_ANON; lru_type++) {
+        list_for_each_entry_safe(folio, next, &lruvec->lists[lru_type], lru) {
             unsigned long folio_pages;
+
             if (collected >= nr_pages_target)
                 break;
+
             if (!folio_trylock(folio))
                 continue;
-            if (!folio_evictable(folio)) {
+
+            /* evictable, not pinned check */
+            if (!folio_evictable(folio) || folio_maybe_dma_pinned(folio)) {
                 folio_unlock(folio);
                 continue;
             }
-            if (folio_maybe_dma_pinned(folio)) {
-                folio_unlock(folio);
-                continue;
-            }
+
+            /* huge folio split 가능 시 처리 */
             folio_pages = folio_nr_pages(folio);
             unsigned long remaining = nr_pages_target - collected;
-            if (folio_pages > remaining) {
+            if (folio_pages > remaining && folio_test_large(folio)) {
+                if (!can_split_folio(folio, remaining, NULL)) {
+                    folio_unlock(folio);
+                    continue;
+                }
+                split_folio_to_list(folio, &lruvec->lists[LRU_INACTIVE_ANON]);
                 folio_unlock(folio);
-                break;
+                continue;
+            } else if (folio_pages > remaining) {
+                folio_unlock(folio);
+                continue;
             }
+
+            /* folio를 demote 리스트로 이동 */
             list_add(&folio->lru, &demote_folios);
-            nr_isolated++;
+            if (folio_test_active(folio))
+                folio_clear_active(folio);  // active -> inactive
             collected += folio_pages;
             folio_unlock(folio);
         }
+        if (collected >= nr_pages_target)
+            break;
     }
+
     spin_unlock_irq(&lruvec->lru_lock);
 
-    // 3) 디모션 실행
+    /* 2) 디모션 실행 */
     if (!list_empty(&demote_folios)) {
-        demote_folio_list(&demote_folios, pgdat);
-		printk(KERN_INFO "[NICE-BALANCING] Demotion success\n");
+        unsigned int nr_demoted = demote_folio_list(&demote_folios, pgdat);
+        printk(KERN_INFO "[NICE-BALANCING] Demoted %u pages\n", nr_demoted);
     }
-    // 4) 디모션 실패 folio cleanup
+
+    /* 3) 남은 folio cleanup */
     if (!list_empty(&demote_folios)) {
         struct folio *fail_folio, *fail_next;
         list_for_each_entry_safe(fail_folio, fail_next, &demote_folios, lru) {
             list_del(&fail_folio->lru);
         }
-		printk(KERN_INFO "[NICE-BALANCING] Demotion failed\n");
+        printk(KERN_INFO "[NICE-BALANCING] Demotion failed for remaining folios\n");
     }
 }
 

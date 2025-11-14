@@ -278,24 +278,32 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 }
 
 // --[hayong]--
-static inline bool dram_is_under_pressure(int nid)
+static inline bool dram_is_under_pressure(int nid, unsigned int nr_to_reclaim)
 {
     struct pglist_data *pgdat = NODE_DATA(nid);
     struct zone *zone;
 
     if (!pgdat)
         return false;
-    
+
+    /* NORMAL zone 기준 */
     zone = &pgdat->node_zones[ZONE_NORMAL];
 
-    if(!zone_watermark_ok(zone, 0, zone->_watermark[WMARK_LOW], 0, 0))
+    /*
+     * 실제 reclaim 요구량 기준으로 watermark 체크.
+     * 기존 demotion 시 커널이 internal하게 확인하는 조건과 동일하게 처리
+     */
+    if (!zone_watermark_ok(zone, nr_to_reclaim,
+                           zone->_watermark[WMARK_LOW], 0, 0))
         return true;
+
+    /* kswapd가 해당 노드에서 reclaim 수행 중이면 압력으로 판단 */
     if (pgdat->kswapd_highest_zoneidx != -1)
         return true;
 
-    // 마지막에 기본값 반환 추가!
     return false;
 }
+
 
 /**
  * do_mmap() - Perform a userland memory mapping into the current process
@@ -375,11 +383,13 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	{
 		int nice_val = task_nice(current);
 		int dram_nid = 0; // hayong - dram 노드 아이디 설정 필요
+
 		//printk(KERN_INFO "[REQ] pid=%d comm=%s nice=%d request mmap len=%lu bytes\n", current->pid, current->comm, nice_val, len);
-	
-		if(dram_is_under_pressure(dram_nid) && nice_val <0)
+		unsigned long nr_pages = len >> PAGE_SHIFT;
+
+		if(dram_is_under_pressure(dram_nid, nr_pages) && nice_val < 0)
 		{
-			unsigned long nr_pages = len >> PAGE_SHIFT;
+			
 
 			force_demote_low_priority_pages(dram_nid, nr_pages, nice_val);
 		}
