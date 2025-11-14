@@ -280,22 +280,23 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 // --[hayong]--
 static inline bool dram_is_under_pressure(int nid)
 {
-	struct pglist_data *pgdat = NODE_DATA(nid);
-	struct zone *zone;
+    struct pglist_data *pgdat = NODE_DATA(nid);
+    struct zone *zone;
 
-	if (!pgdat)
-		return false;
-	
-	zone = &pgdat->node_zones[ZONE_NORMAL];
+    if (!pgdat)
+        return false;
+    
+    zone = &pgdat->node_zones[ZONE_NORMAL];
 
-	if(!zone_watermark_ok(zone, 0, zone->_watermark[WMARK_LOW], 0, 0))
-	{
-		return true;
-	}
+    if(!zone_watermark_ok(zone, 0, zone->_watermark[WMARK_LOW], 0, 0))
+        return true;
+    if (pgdat->kswapd_highest_zoneidx != -1)
+        return true;
 
-	if (pgdat->kswapd_highest_zoneidx != -1)
-		return true;
+    // 마지막에 기본값 반환 추가!
+    return false;
 }
+
 /**
  * do_mmap() - Perform a userland memory mapping into the current process
  * address space of length @len with protection bits @prot, mmap flags @flags

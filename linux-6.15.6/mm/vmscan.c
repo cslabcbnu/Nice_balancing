@@ -1162,7 +1162,6 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
     unsigned long nr_pages_target = nr_pages_requested;
     
     struct zone *zone;
-    unsigned long zone_free_pages;
     
     if (!pgdat)
         return;
@@ -1172,14 +1171,6 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
     if (!lruvec || !zone)
         return;
     
-    zone_free_pages = zone_page_state(zone, NR_FREE_PAGES);
-    printk(KERN_INFO "[DEMOTE_FORCE] Start demotion for pid=%d (nice=%d)\n",
-           current->pid, requester_nice);
-    printk(KERN_INFO "[DEMOTE_FORCE] Current DRAM: free=%lu, low=%lu, min=%lu\n",
-           zone_free_pages, zone->_watermark[WMARK_LOW], zone->_watermark[WMARK_MIN]);
-    printk(KERN_INFO "[DEMOTE_FORCE] Target: demote exactly %lu pages\n",
-           nr_pages_target);
-
     spin_lock_irq(&lruvec->lru_lock);
     // 1) Inactive Anonymous pages 스캔
     list_for_each_entry_safe(folio, next,
@@ -1190,7 +1181,6 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
             break;
         if (!folio_trylock(folio))
             continue;
-        // 커널 표준: unevictable/locked/pinned 분기
         if (!folio_evictable(folio)) {
             folio_unlock(folio);
             continue;
@@ -1205,7 +1195,6 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
             folio_unlock(folio);
             break;
         }
-        // 실제 demote_folios 리스트에 추가
         list_add(&folio->lru, &demote_folios);
         nr_isolated++;
         collected += folio_pages;
@@ -1243,41 +1232,18 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
     }
     spin_unlock_irq(&lruvec->lru_lock);
 
-    printk(KERN_INFO "[DEMOTE_FORCE] Collected %d folios, %lu pages total\n",
-           nr_isolated, collected);
-    if (collected < nr_pages_target) {
-        printk(KERN_WARNING "[DEMOTE_FORCE] WARNING: Only collected %lu / %lu pages\n",
-               collected, nr_pages_target);
-    }
-
     // 3) 디모션 실행
     if (!list_empty(&demote_folios)) {
-        unsigned long nr_demoted;
-        printk(KERN_INFO "[DEMOTE_FORCE] Performing actual demotion...\n");
-        nr_demoted = demote_folio_list(&demote_folios, pgdat);
-        printk(KERN_INFO "[DEMOTE_FORCE] Demoted %lu folios successfully\n", nr_demoted);
-        zone_free_pages = zone_page_state(zone, NR_FREE_PAGES);
-        printk(KERN_INFO "[DEMOTE_FORCE] DRAM free pages after: %lu\n",
-               zone_free_pages);
-        if (nr_demoted < nr_isolated) {
-            printk(KERN_WARNING "[DEMOTE_FORCE] Some folios could not be demoted (%lu < %lu)\n",
-                   nr_demoted, nr_isolated);
-        }
-    } else {
-        printk(KERN_WARNING "[DEMOTE_FORCE] No folios collected for demotion!\n");
+        demote_folio_list(&demote_folios, pgdat);
     }
     // 4) 디모션 실패 folio cleanup
     if (!list_empty(&demote_folios)) {
         struct folio *fail_folio, *fail_next;
         list_for_each_entry_safe(fail_folio, fail_next, &demote_folios, lru) {
             list_del(&fail_folio->lru);
-            // 커널에서 보통 folio_put은 언락 전후 상황에 맞게 호출 (여기선 단순히 제거)
         }
     }
-    printk(KERN_INFO "[DEMOTE_FORCE] Demotion work complete for pid=%d\n", current->pid);
 }
-
-
 
 static bool may_enter_fs(struct folio *folio, gfp_t gfp_mask)
 {
