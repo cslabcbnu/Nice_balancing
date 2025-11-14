@@ -3633,10 +3633,6 @@ check_alloc_wmark:
 		if (!zone_watermark_fast(zone, order, mark,
 				       ac->highest_zoneidx, alloc_flags,
 				       gfp_mask)) {
-
-						if (!current_is_kswapd() && current->mm) {
-							printk("[CXL-TRACE] Low watermark hit: PID:%d (%s) NICE:%d order:%u\n", current->pid, current->comm, task_nice(current), order);
-						}
 			int ret;
 
 			if (cond_accept_memory(zone, order, alloc_flags))

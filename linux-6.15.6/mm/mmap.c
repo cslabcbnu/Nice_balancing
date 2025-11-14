@@ -350,6 +350,8 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	if (!len)
 		return -EINVAL;
 
+
+	printk(KERN_INFO "[REQ] pid=%d comm=%s nice=%d request mmap len=%lu bytes\n", current->pid, current->comm, task_nice(current), len);
 	/*
 	 * Does the application expect PROT_READ to imply PROT_EXEC?
 	 *
