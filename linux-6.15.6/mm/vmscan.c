@@ -1117,17 +1117,17 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	   /* hayong - check folio's nice value */
 	sort_folio_list_by_nice(demote_folios);
 	
-   	struct folio *folio;
-	list_for_each_entry(folio, demote_folios, lru) 
+   	//struct folio *folio;
+	//list_for_each_entry(folio, demote_folios, lru) 
 	{
 		//hayong
-		int user_pid = folio_last_user_pid(folio);
-    	struct task_struct *task = pid_task(find_vpid(user_pid), PIDTYPE_PID);
+		//int user_pid = folio_last_user_pid(folio);
+    	//struct task_struct *task = pid_task(find_vpid(user_pid), PIDTYPE_PID);
     	//if (task) 
 		//{
         //	printk(KERN_INFO "[demote] folio=%p pid=%d comm=%s nice=%d\n", folio, task->pid, task->comm, task_nice(task));
 		//}
-	}
+	//}
 
 	/* Demotion ignores all cpuset and mempolicy settings */
 	migrate_pages(demote_folios, alloc_migrate_folio, NULL,
