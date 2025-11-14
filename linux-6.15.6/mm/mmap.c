@@ -288,7 +288,7 @@ static inline bool dram_is_under_pressure(int nid)
 	
 	zone = &pgdat->node_zones[ZONE_NORMAL];
 
-	if(!zone_watermark_ok(zone, 0, zone->_watermark.low, 0, 0))
+	if(!zone_watermark_ok(zone, 0, zone->_watermark[WMARK_LOW], 0, 0))
 	{
 		return true;
 	}
