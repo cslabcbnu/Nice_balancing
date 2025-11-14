@@ -1137,6 +1137,197 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	return nr_succeeded;
 }
 
+/**
+ * force_demote_low_priority_pages - 요청한 양만큼 강제 디모션
+ * @nid: DRAM 노드 ID
+ * @nr_pages_requested: 정확히 요청받은 페이지 수
+ * @requester_nice: 요청 프로세스의 nice 값 (정보 목적, 이미 검증됨)
+ *
+ * 호출 전제:
+ * - DRAM이 이미 메모리 압박 상태임이 확인됨
+ * - 요청 프로세스의 nice 값이 음수(높은 우선순위)임이 확인됨
+ * 
+ * 따라서 함수 내부에서는 조건 확인 없이 바로 디모션 작업 수행
+ */
+// hayong - 강제 디모션 함수 구현
+void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, int requester_nice)
+{
+    struct pglist_data *pgdat = NODE_DATA(nid);
+    struct lruvec *lruvec;
+    struct folio *folio, *next;
+    LIST_HEAD(demote_folios);
+    
+    unsigned long collected = 0;
+    int nr_isolated = 0;
+    unsigned long nr_pages_target = nr_pages_requested;
+    
+    struct zone *zone;
+    unsigned long zone_free_pages;
+    
+    // 기본 유효성 검사만 수행 (NULL 포인터 등)
+    if (!pgdat)
+        return;
+    
+    zone = &pgdat->node_zones[ZONE_NORMAL];
+    lruvec = mem_cgroup_lruvec(NULL, pgdat);
+    
+    if (!lruvec || !zone)
+        return;
+    
+    // 현재 DRAM 상태 로깅 (정보 목적)
+    zone_free_pages = zone_page_state(zone, NR_FREE_PAGES);
+    
+    printk(KERN_INFO "[DEMOTE_FORCE] Start demotion for pid=%d (nice=%d)\n",
+           current->pid, requester_nice);
+    printk(KERN_INFO "[DEMOTE_FORCE] Current DRAM: free=%lu, low=%lu, min=%lu\n",
+           zone_free_pages, zone->watermark[WMARK_LOW], zone->watermark[WMARK_MIN]);
+    printk(KERN_INFO "[DEMOTE_FORCE] Target: demote exactly %lu pages\n",
+           nr_pages_target);
+    
+    spin_lock_irq(&lruvec->lru_lock);
+    
+    /*
+     * Step 1: Inactive LRU에서 정확히 필요한 양만큼 folio 수집
+     */
+    
+    // Inactive Anonymous pages 스캔
+    list_for_each_entry_safe(folio, next,
+                             &lruvec->lists[LRU_INACTIVE_ANON],
+                             lru) {
+        
+        unsigned long folio_pages;
+        
+        // 이미 목표량 도달
+        if (collected >= nr_pages_target)
+            break;
+        
+        if (!folio_trylock(folio))
+            continue;
+        
+        if (!folio_get_unless_zero(folio)) {
+            folio_unlock(folio);
+            continue;
+        }
+        
+        if (folio_test_unevictable(folio)) {
+            folio_put(folio);
+            folio_unlock(folio);
+            continue;
+        }
+        
+        folio_pages = folio_nr_pages(folio);
+        unsigned long remaining = nr_pages_target - collected;
+        
+        // 현재 folio가 남은 요청량보다 크면 추가 안 함
+        if (folio_pages > remaining) {
+            folio_put(folio);
+            folio_unlock(folio);
+            break;
+        }
+        
+        // demote_folios 리스트에 추가
+        list_add(&folio->lru, &demote_folios);
+        nr_isolated++;
+        collected += folio_pages;
+        
+        folio_unlock(folio);
+    }
+    
+    // Inactive File pages도 필요하면 수집
+    if (collected < nr_pages_target) {
+        list_for_each_entry_safe(folio, next,
+                                 &lruvec->lists[LRU_INACTIVE_FILE],
+                                 lru) {
+            
+            unsigned long folio_pages;
+            
+            if (collected >= nr_pages_target)
+                break;
+            
+            if (!folio_trylock(folio))
+                continue;
+            
+            if (!folio_get_unless_zero(folio)) {
+                folio_unlock(folio);
+                continue;
+            }
+            
+            if (folio_test_unevictable(folio)) {
+                folio_put(folio);
+                folio_unlock(folio);
+                continue;
+            }
+            
+            folio_pages = folio_nr_pages(folio);
+            unsigned long remaining = nr_pages_target - collected;
+            
+            if (folio_pages > remaining) {
+                folio_put(folio);
+                folio_unlock(folio);
+                break;
+            }
+            
+            list_add(&folio->lru, &demote_folios);
+            nr_isolated++;
+            collected += folio_pages;
+            
+            folio_unlock(folio);
+        }
+    }
+    
+    spin_unlock_irq(&lruvec->lru_lock);
+    
+    printk(KERN_INFO "[DEMOTE_FORCE] Collected %d folios, %lu pages total\n",
+           nr_isolated, collected);
+    
+    // 부족한 경우 경고만 출력 (디모션은 계속 진행)
+    if (collected < nr_pages_target) {
+        printk(KERN_WARN "[DEMOTE_FORCE] WARNING: Only collected %lu / %lu pages\n",
+               collected, nr_pages_target);
+    }
+    
+    /*
+     * Step 2: 수집한 folio 디모션 (기존 커널 함수 재사용)
+     */
+    if (!list_empty(&demote_folios)) {
+        unsigned long nr_demoted;
+        
+        printk(KERN_INFO "[DEMOTE_FORCE] Performing actual demotion...\n");
+        
+        // 기존 커널 함수: DRAM → CXL 이동
+        nr_demoted = demote_folio_list(&demote_folios, pgdat);
+        
+        printk(KERN_INFO "[DEMOTE_FORCE] Demoted %lu folios successfully\n",
+               nr_demoted);
+        
+        // 디모션 후 DRAM 상태 재확인
+        zone_free_pages = zone_page_state(zone, NR_FREE_PAGES);
+        printk(KERN_INFO "[DEMOTE_FORCE] DRAM free pages after: %lu\n",
+               zone_free_pages);
+        
+        if (nr_demoted < nr_isolated) {
+            printk(KERN_WARN "[DEMOTE_FORCE] Some folios could not be demoted (%lu < %lu)\n",
+                   nr_demoted, nr_isolated);
+        }
+    } else {
+        printk(KERN_WARN "[DEMOTE_FORCE] No folios collected for demotion!\n");
+    }
+    
+    // 디모션 실패한 folio 정리
+    if (!list_empty(&demote_folios)) {
+        struct folio *folio, *next;
+        
+        list_for_each_entry_safe(folio, next, &demote_folios, lru) {
+            list_del(&folio->lru);
+            folio_put(folio);
+        }
+    }
+    
+    printk(KERN_INFO "[DEMOTE_FORCE] Demotion work complete for pid=%d\n",
+           current->pid);
+}
+
+
 static bool may_enter_fs(struct folio *folio, gfp_t gfp_mask)
 {
 	if (gfp_mask & __GFP_FS)

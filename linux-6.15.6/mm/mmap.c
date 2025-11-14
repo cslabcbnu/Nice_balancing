@@ -277,6 +277,25 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 	return true;
 }
 
+// --[hayong]--
+static inline bool dram_is_under_pressure(int nid)
+{
+	struct pglist_data *pgdat = NODE_DATA(nid);
+	struct zone *zone;
+
+	if (!pgdat)
+		return false;
+	
+	zone = &pgdat->node_zones[ZONE_NORMAL];
+
+	if(!zone_watermark_ok(zone, 0, zone->watermark[WMARK_LOW], 0, 0))
+	{
+		return true;
+	}
+
+	if (pgdat->kswapd_classzone_idx != -1)
+		return true;
+}
 /**
  * do_mmap() - Perform a userland memory mapping into the current process
  * address space of length @len with protection bits @prot, mmap flags @flags
@@ -351,9 +370,22 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		return -EINVAL;
 
 
-	if(current->mm)
-		printk(KERN_INFO "[REQ] pid=%d comm=%s nice=%d request mmap len=%lu bytes\n", current->pid, current->comm, task_nice(current), len);
+	if(current->mm && len >0)
+	{
+		int nice_val = task_nice(current);
+		int dram_nid = DRAM_NODE_ID;
+		printk(KERN_INFO "[REQ] pid=%d comm=%s nice=%d request mmap len=%lu bytes\n", current->pid, current->comm, nice_val, len);
+	
+		if(dram_is_under_pressure(dram_nid) && nice_val <0)
+		{
+			unsigned long nr_pages = len >> PAGE_SHIFT;
 
+			force_demote_low_priority_pages(dram_nid, nr_pages, nice_val);
+		}
+	
+	}
+		
+	
 	/*
 	 * Does the application expect PROT_READ to imply PROT_EXEC?
 	 *
