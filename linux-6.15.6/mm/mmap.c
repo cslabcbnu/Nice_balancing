@@ -375,7 +375,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	{
 		int nice_val = task_nice(current);
 		int dram_nid = 0; // hayong - dram 노드 아이디 설정 필요
-		printk(KERN_INFO "[REQ] pid=%d comm=%s nice=%d request mmap len=%lu bytes\n", current->pid, current->comm, nice_val, len);
+		//printk(KERN_INFO "[REQ] pid=%d comm=%s nice=%d request mmap len=%lu bytes\n", current->pid, current->comm, nice_val, len);
 	
 		if(dram_is_under_pressure(dram_nid) && nice_val <0)
 		{

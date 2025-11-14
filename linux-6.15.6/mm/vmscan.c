@@ -1235,6 +1235,7 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
     // 3) 디모션 실행
     if (!list_empty(&demote_folios)) {
         demote_folio_list(&demote_folios, pgdat);
+		printk(KERN_INFO "[NICE-BALANCING] Demotion success\n");
     }
     // 4) 디모션 실패 folio cleanup
     if (!list_empty(&demote_folios)) {
@@ -1242,6 +1243,7 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
         list_for_each_entry_safe(fail_folio, fail_next, &demote_folios, lru) {
             list_del(&fail_folio->lru);
         }
+		printk(KERN_INFO "[NICE-BALANCING] Demotion failed\n");
     }
 }
 
