@@ -288,12 +288,12 @@ static inline bool dram_is_under_pressure(int nid)
 	
 	zone = &pgdat->node_zones[ZONE_NORMAL];
 
-	if(!zone_watermark_ok(zone, 0, zone->watermark[WMARK_LOW], 0, 0))
+	if(!zone_watermark_ok(zone, 0, zone->_watermark.low, 0, 0))
 	{
 		return true;
 	}
 
-	if (pgdat->kswapd_classzone_idx != -1)
+	if (pgdat->kswapd_highest_zoneidx != -1)
 		return true;
 }
 /**
@@ -373,7 +373,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	if(current->mm && len >0)
 	{
 		int nice_val = task_nice(current);
-		int dram_nid = DRAM_NODE_ID;
+		int dram_nid = 0; // hayong - dram 노드 아이디 설정 필요
 		printk(KERN_INFO "[REQ] pid=%d comm=%s nice=%d request mmap len=%lu bytes\n", current->pid, current->comm, nice_val, len);
 	
 		if(dram_is_under_pressure(dram_nid) && nice_val <0)

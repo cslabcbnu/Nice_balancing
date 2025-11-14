@@ -1282,7 +1282,7 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
     
     // 부족한 경우 경고만 출력 (디모션은 계속 진행)
     if (collected < nr_pages_target) {
-        printk(KERN_WARN "[DEMOTE_FORCE] WARNING: Only collected %lu / %lu pages\n",
+        printk(KERN_WARNING "[DEMOTE_FORCE] WARNING: Only collected %lu / %lu pages\n",
                collected, nr_pages_target);
     }
     
@@ -1306,11 +1306,11 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
                zone_free_pages);
         
         if (nr_demoted < nr_isolated) {
-            printk(KERN_WARN "[DEMOTE_FORCE] Some folios could not be demoted (%lu < %lu)\n",
+            printk(KERN_WARNING "[DEMOTE_FORCE] Some folios could not be demoted (%lu < %lu)\n",
                    nr_demoted, nr_isolated);
         }
     } else {
-        printk(KERN_WARN "[DEMOTE_FORCE] No folios collected for demotion!\n");
+        printk(KERN_WARNING "[DEMOTE_FORCE] No folios collected for demotion!\n");
     }
     
     // 디모션 실패한 folio 정리
