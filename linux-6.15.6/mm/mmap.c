@@ -352,14 +352,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 
 
 	if(current->mm)
-	{
-		int nr = syscall_get_nr(current, task_pt__regs(current));
-		if(nr != __NR_mmap && nr != __NR_mmap2)
-			goto skip_print;
 		printk(KERN_INFO "[REQ] pid=%d comm=%s nice=%d request mmap len=%lu bytes\n", current->pid, current->comm, task_nice(current), len);
-	}
-
-skip_print:
 
 	/*
 	 * Does the application expect PROT_READ to imply PROT_EXEC?
