@@ -1119,7 +1119,7 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	
    	//struct folio *folio;
 	//list_for_each_entry(folio, demote_folios, lru) 
-	{
+	//{
 		//hayong
 		//int user_pid = folio_last_user_pid(folio);
     	//struct task_struct *task = pid_task(find_vpid(user_pid), PIDTYPE_PID);
