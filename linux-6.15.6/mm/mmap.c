@@ -280,25 +280,20 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 // --[hayong]--
 static inline bool dram_is_under_pressure(int nid, unsigned int nr_to_reclaim)
 {
-    struct pglist_data *pgdat = NODE_DATA(nid);
-    struct zone *zone;
+    struct zone *zone = &NODE_DATA(nid)->node_zones[ZONE_NORMAL];
 
-    if (!pgdat)
-        return false;
+    unsigned long free = zone_page_state(zone, NR_FREE_PAGES);
+    unsigned long reclaimable = zone_reclaimable_pages(zone);
+    unsigned long usable = free + reclaimable;
 
-    /* NORMAL zone 기준 */
-    zone = &pgdat->node_zones[ZONE_NORMAL];
+    /* 커널 watermark를 고려한 안전 margin */
+    unsigned long margin = zone->_watermark[WMARK_HIGH];
 
     /*
-     * 실제 reclaim 요구량 기준으로 watermark 체크.
-     * 기존 demotion 시 커널이 internal하게 확인하는 조건과 동일하게 처리
+     * DRAM usable이 요청량 + margin보다 작으면
+     * mmap 시점에 거의 100% CXL fallback이 발생함.
      */
-    if (!zone_watermark_ok(zone, nr_to_reclaim,
-                           zone->_watermark[WMARK_LOW], 0, 0))
-        return true;
-
-    /* kswapd가 해당 노드에서 reclaim 수행 중이면 압력으로 판단 */
-    if (pgdat->kswapd_highest_zoneidx != -1)
+    if (usable < request_pages + margin)
         return true;
 
     return false;
@@ -389,8 +384,6 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 
 		if(dram_is_under_pressure(dram_nid, nr_pages) && nice_val < 0)
 		{
-			
-
 			force_demote_low_priority_pages(dram_nid, nr_pages, nice_val);
 		}
 	
