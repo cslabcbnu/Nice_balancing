@@ -1137,112 +1137,64 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	return nr_succeeded;
 }
 
-/**
- * force_demote_low_priority_pages - 요청한 양만큼 강제 디모션
- * @nid: DRAM 노드 ID
- * @nr_pages_requested: 정확히 요청받은 페이지 수
- * @requester_nice: 요청 프로세스의 nice 값 (정보 목적, 이미 검증됨)
- *
- * 호출 전제:
- * - DRAM이 이미 메모리 압박 상태임이 확인됨
- * - 요청 프로세스의 nice 값이 음수(높은 우선순위)임이 확인됨
- * 
- * 따라서 함수 내부에서는 조건 확인 없이 바로 디모션 작업 수행
- */
-// hayong - 강제 디모션 함수 구현
-void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, int requester_nice)
+void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_target)
 {
-    struct pglist_data *pgdat = NODE_DATA(nid);
-    struct lruvec *lruvec;
-    struct folio *folio, *next;
-    LIST_HEAD(demote_folios);
-
+    struct lru_gen_folio *lrugen = &lruvec->lrugen;
+    int oldest_gen;
+    int type, zone;
     unsigned long collected = 0;
-    unsigned long nr_pages_target = nr_pages_requested;
-    struct zone *zone;
+    struct list_head demote_list;
+    struct folio *folio, *next;
 
-    printk(KERN_INFO "[NICE-BALANCING] Enter force_demote: nid=%d, request=%lu pages, nice=%d\n",
-           nid, nr_pages_requested, requester_nice);
+    LIST_HEAD(demote_list);
 
-    if (!pgdat) {
-        printk(KERN_INFO "[NICE-BALANCING] Early return: pgdat NULL\n");
-        return;
-    }
+    /* 1) Oldest generation 확인 */
+    for (type = 0; type < LRU_GEN_TYPES; type++) {
+        if (get_nr_gens(lruvec, type) <= MIN_NR_GENS)
+            continue;
 
-    zone = &pgdat->node_zones[ZONE_NORMAL];
-    lruvec = mem_cgroup_lruvec(NULL, pgdat);
-    if (!lruvec || !zone) {
-        printk(KERN_INFO "[NICE-BALANCING] Early return: lruvec or zone NULL\n");
-        return;
-    }
+        oldest_gen = lru_gen_from_seq(lrugen->min_seq[type]);
 
-    spin_lock_irq(&lruvec->lru_lock);
-    printk(KERN_INFO "[NICE-BALANCING] Start scanning LRU lists\n");
+        for (zone = 0; zone < MAX_NR_ZONES; zone++) {
+            struct list_head *head = &lrugen->folios[oldest_gen][type][zone];
 
-    for (int lru_type = LRU_INACTIVE_ANON; lru_type <= LRU_ACTIVE_ANON; lru_type++) {
-        list_for_each_entry_safe(folio, next, &lruvec->lists[lru_type], lru) {
-            unsigned long folio_pages;
+            list_for_each_entry_safe(folio, next, head, lru) {
 
-            if (collected >= nr_pages_target)
-                break;
+                /* 이미 요청량 채우면 종료 */
+                if (collected >= nr_pages_target)
+                    goto done;
 
-            if (!folio_trylock(folio))
-                continue;
+                /* tmpfs 등 pin된 folio는 제외 */
+                if (folio_maybe_dma_pinned(folio))
+                    continue;
 
-            folio_pages = folio_nr_pages(folio);
+                /* folio 잠금 후 demote 리스트로 이동 */
+                if (!folio_trylock(folio))
+                    continue;
 
-            /* 🔹 folio가 속한 task의 nice 값 확인 (task_nice_for_folio 필요) */
-            int folio_nice = task_nice_for_folio(folio);
-
-            /* nice 0 이상이면 강제 demote */
-            if (folio_nice >= 0 || (folio_evictable(folio) && !folio_maybe_dma_pinned(folio))) {
-                /* huge folio split 가능 시 처리 */
-                unsigned long remaining = nr_pages_target - collected;
-                if (folio_pages > remaining && folio_test_large(folio)) {
-                    if (can_split_folio(folio, remaining, NULL)) {
-                        split_folio_to_list(folio, &lruvec->lists[LRU_INACTIVE_ANON]);
-                        printk(KERN_INFO "[NICE-BALANCING] folio %p split to remaining=%lu\n",
-                               folio, remaining);
-                        folio_unlock(folio);
-                        continue;
-                    }
-                }
-
-                /* 기존 리스트에서 제거 후 demote 리스트로 이동 */
                 list_del_init(&folio->lru);
-                list_add_tail(&folio->lru, &demote_folios);
+                list_add_tail(&folio->lru, &demote_list);
+
                 if (folio_test_active(folio))
-                    folio_clear_active(folio); // active → inactive
-                collected += folio_pages;
-                printk(KERN_INFO "[NICE-BALANCING] folio %p added to demote list, pages=%lu, collected=%lu, nice=%d\n",
-                       folio, folio_pages, collected, folio_nice);
+                    folio_clear_active(folio);
+
+                collected += folio_nr_pages(folio);
+                folio_unlock(folio);
             }
-
-            folio_unlock(folio);
         }
-        if (collected >= nr_pages_target)
-            break;
     }
 
-    spin_unlock_irq(&lruvec->lru_lock);
-
+done:
     /* demote 실행 */
-    if (!list_empty(&demote_folios)) {
-        unsigned int nr_demoted = demote_folio_list(&demote_folios, pgdat);
-        printk(KERN_INFO "[NICE-BALANCING] Demoted %u pages\n", nr_demoted);
-    } else {
-        printk(KERN_INFO "[NICE-BALANCING] No folios collected for demotion\n");
+    if (!list_empty(&demote_list)) {
+        struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+        unsigned int nr_demoted = demote_folio_list(&demote_list, pgdat);
+        printk(KERN_INFO "[NICE-BALANCING] force_demote_lowest_gen: Demoted %u pages\n", nr_demoted);
     }
 
-    /* 남은 folio cleanup */
-    if (!list_empty(&demote_folios)) {
-        struct folio *fail_folio, *fail_next;
-        list_for_each_entry_safe(fail_folio, fail_next, &demote_folios, lru)
-            list_del(&fail_folio->lru);
-        printk(KERN_INFO "[NICE-BALANCING] Demotion failed for remaining folios\n");
-    }
-
-    printk(KERN_INFO "[NICE-BALANCING] Exit force_demote\n");
+    if (collected < nr_pages_target)
+        printk(KERN_INFO "[NICE-BALANCING] force_demote_lowest_gen: Could not collect all requested pages. Requested=%lu, Collected=%lu\n",
+               nr_pages_target, collected);
 }
 
 static bool may_enter_fs(struct folio *folio, gfp_t gfp_mask)

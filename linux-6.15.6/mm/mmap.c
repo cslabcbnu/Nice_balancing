@@ -376,20 +376,25 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		return -EINVAL;
 
 
-	if(current->mm && len >0)
-	{
-		int nice_val = task_nice(current);
-		int dram_nid = 0; // hayong - dram 노드 아이디 설정 필요
+	if (current->mm && len > 0) {
+        int nice_val = task_nice(current);
+        int dram_nid = 0; // hayong - dram 노드 아이디 설정 필요
+        unsigned long nr_pages = len >> PAGE_SHIFT;
 
-		//printk(KERN_INFO "[REQ] pid=%d comm=%s nice=%d request mmap len=%lu bytes\n", current->pid, current->comm, nice_val, len);
-		unsigned long nr_pages = len >> PAGE_SHIFT;
+        /* DRAM 압력 체크 */
+        if (dram_is_under_pressure(dram_nid, nr_pages) && nice_val < 0) {
+            struct pglist_data *pgdat = NODE_DATA(dram_nid);
+            struct lruvec *lruvec = mem_cgroup_lruvec(NULL, pgdat);
 
-		if(dram_is_under_pressure(dram_nid, nr_pages) && nice_val < 0)
-		{
-			force_demote_low_priority_pages(dram_nid, nr_pages, nice_val);
-		}
-	
-	}
+            if (lruvec) {
+                printk(KERN_INFO "[NICE-BALANCING] do_mmap: Demote requested %lu pages for nice %d process\n",
+                       nr_pages, nice_val);
+                force_demote_lowest_gen(lruvec, nr_pages);
+            } else {
+                printk(KERN_INFO "[NICE-BALANCING] do_mmap: Could not get lruvec for nid=%d\n", dram_nid);
+            }
+        }
+    }
 		
 	
 	/*
