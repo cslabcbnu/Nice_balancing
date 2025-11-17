@@ -1152,8 +1152,7 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
     printk(KERN_INFO "[NICE-BALANCING] force_demote_lowest_gen: Requesting %lu pages\n", nr_pages_target);
 
     for (type = 0; type < LRU_GEN_CORE; type++) {
-        printk(KERN_INFO "[NICE-BALANCING] Checking type=%d, min_seq=%llu, nr_gens=%d\n",
-               type, lrugen->min_seq[type], get_nr_gens(lruvec, type));
+        printk(KERN_INFO "[NICE-BALANCING] Checking type=%d, min_seq=%lu, nr_gens=%d\n", type, lrugen->min_seq[type], get_nr_gens(lruvec, type));
 
         if (get_nr_gens(lruvec, type) <= MIN_NR_GENS)
             continue;
