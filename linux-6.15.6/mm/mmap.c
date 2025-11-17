@@ -282,22 +282,24 @@ static inline bool dram_is_under_pressure(int nid, unsigned int request_pages)
 {
     struct zone *zone = &NODE_DATA(nid)->node_zones[ZONE_NORMAL];
 
-    unsigned long free = zone_page_state(zone, NR_FREE_PAGES);
-    unsigned long reclaimable = zone_reclaimable_pages(zone);
-    unsigned long usable = free + reclaimable;
-
-    /* 커널 watermark를 고려한 안전 margin */
-    unsigned long margin = zone->_watermark[WMARK_HIGH];
-
     /*
-     * DRAM usable이 요청량 + margin보다 작으면
-     * mmap 시점에 거의 100% CXL fallback이 발생함.
+     * DRAM Zone에서 request_pages 를 HIGH 워터마크 기준으로
+     * 바로 할당 가능할지 확인.
+     *
+     * zone_watermark_ok() = true  → DRAM에서 정상 할당 가능
+     * zone_watermark_ok() = false → DRAM 부족 → 곧바로 CXL fallback 발생
      */
-    if (usable < request_pages + margin)
-        return true;
+    if (!zone_watermark_ok(zone,
+                           request_pages,
+                           zone->_watermark[WMARK_HIGH],
+                           0, /* alloc flags */
+                           0  /* classzone_idx */
+                           ))
+        return true;   // DRAM 압박 → fallback 직전 → demote 필요
 
     return false;
 }
+
 
 
 /**
@@ -384,6 +386,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 
 		if(dram_is_under_pressure(dram_nid, nr_pages) && nice_val < 0)
 		{
+			printk(KERN_INFO "[NICE-BALANCING] success\n");
 			force_demote_low_priority_pages(dram_nid, nr_pages, nice_val);
 		}
 	
