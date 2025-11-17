@@ -1161,29 +1161,43 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
     unsigned long nr_pages_target = nr_pages_requested;
     struct zone *zone;
 
-    if (!pgdat)
+    printk(KERN_INFO "[NICE-BALANCING] Enter force_demote: nid=%d, request=%lu pages, nice=%d\n",
+           nid, nr_pages_requested, requester_nice);
+
+    if (!pgdat) {
+        printk(KERN_INFO "[NICE-BALANCING] Early return: pgdat NULL\n");
         return;
+    }
 
     zone = &pgdat->node_zones[ZONE_NORMAL];
     lruvec = mem_cgroup_lruvec(NULL, pgdat);
-    if (!lruvec || !zone)
+    if (!lruvec || !zone) {
+        printk(KERN_INFO "[NICE-BALANCING] Early return: lruvec or zone NULL\n");
         return;
+    }
 
     spin_lock_irq(&lruvec->lru_lock);
+
+    printk(KERN_INFO "[NICE-BALANCING] Start scanning LRU lists\n");
 
     /* 1) Inactive + Active Anonymous pages 스캔 */
     for (int lru_type = LRU_INACTIVE_ANON; lru_type <= LRU_ACTIVE_ANON; lru_type++) {
         list_for_each_entry_safe(folio, next, &lruvec->lists[lru_type], lru) {
             unsigned long folio_pages;
 
-            if (collected >= nr_pages_target)
+            if (collected >= nr_pages_target) {
+                printk(KERN_INFO "[NICE-BALANCING] Target reached: collected=%lu\n", collected);
                 break;
+            }
 
-            if (!folio_trylock(folio))
+            if (!folio_trylock(folio)) {
+                printk(KERN_INFO "[NICE-BALANCING] folio %p trylock failed\n", folio);
                 continue;
+            }
 
             /* evictable, not pinned check */
             if (!folio_evictable(folio) || folio_maybe_dma_pinned(folio)) {
+                printk(KERN_INFO "[NICE-BALANCING] folio %p not evictable or pinned\n", folio);
                 folio_unlock(folio);
                 continue;
             }
@@ -1193,27 +1207,32 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
             unsigned long remaining = nr_pages_target - collected;
             if (folio_pages > remaining && folio_test_large(folio)) {
                 if (!can_split_folio(folio, remaining, NULL)) {
+                    printk(KERN_INFO "[NICE-BALANCING] folio %p large, cannot split remaining=%lu\n", folio, remaining);
                     folio_unlock(folio);
                     continue;
                 }
                 split_folio_to_list(folio, &lruvec->lists[LRU_INACTIVE_ANON]);
+                printk(KERN_INFO "[NICE-BALANCING] folio %p split to remaining=%lu\n", folio, remaining);
                 folio_unlock(folio);
                 continue;
             } else if (folio_pages > remaining) {
+                printk(KERN_INFO "[NICE-BALANCING] folio %p too large for remaining=%lu\n", folio, remaining);
                 folio_unlock(folio);
                 continue;
             }
 
-				/* 원래 리스트에서 제거 후 demote 리스트로 이동 */
-				list_del_init(&folio->lru);           // 기존 LRU 리스트에서 제거
-				list_add_tail(&folio->lru, &demote_folios);  // tail로 넣어서 순서 유지
+            /* 원래 리스트에서 제거 후 demote 리스트로 이동 */
+            list_del_init(&folio->lru);
+            list_add_tail(&folio->lru, &demote_folios);
 
-				if (folio_test_active(folio))
-					folio_clear_active(folio);       // active → inactive
+            if (folio_test_active(folio))
+                folio_clear_active(folio); // active → inactive
 
-				collected += folio_pages;            // 수집된 페이지 수 누적
-				folio_unlock(folio);                  // folio 잠금 해제
+            collected += folio_pages;
+            printk(KERN_INFO "[NICE-BALANCING] folio %p added to demote list, folio_pages=%lu, collected=%lu\n",
+                   folio, folio_pages, collected);
 
+            folio_unlock(folio);
         }
         if (collected >= nr_pages_target)
             break;
@@ -1225,6 +1244,8 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
     if (!list_empty(&demote_folios)) {
         unsigned int nr_demoted = demote_folio_list(&demote_folios, pgdat);
         printk(KERN_INFO "[NICE-BALANCING] Demoted %u pages\n", nr_demoted);
+    } else {
+        printk(KERN_INFO "[NICE-BALANCING] No folios collected for demotion\n");
     }
 
     /* 3) 남은 folio cleanup */
@@ -1235,6 +1256,8 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
         }
         printk(KERN_INFO "[NICE-BALANCING] Demotion failed for remaining folios\n");
     }
+
+    printk(KERN_INFO "[NICE-BALANCING] Exit force_demote\n");
 }
 
 static bool may_enter_fs(struct folio *folio, gfp_t gfp_mask)

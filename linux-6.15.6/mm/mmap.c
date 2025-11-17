@@ -386,7 +386,6 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 
 		if(dram_is_under_pressure(dram_nid, nr_pages) && nice_val < 0)
 		{
-			printk(KERN_INFO "[NICE-BALANCING] success\n");
 			force_demote_low_priority_pages(dram_nid, nr_pages, nice_val);
 		}
 	
