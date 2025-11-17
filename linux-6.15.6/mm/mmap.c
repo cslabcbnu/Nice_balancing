@@ -278,7 +278,7 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 }
 
 // --[hayong]--
-static inline bool dram_is_under_pressure(int nid, unsigned int nr_to_reclaim)
+static inline bool dram_is_under_pressure(int nid, unsigned int request_pages)
 {
     struct zone *zone = &NODE_DATA(nid)->node_zones[ZONE_NORMAL];
 
