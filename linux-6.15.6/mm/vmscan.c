@@ -1204,12 +1204,16 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
                 continue;
             }
 
-            /* folio를 demote 리스트로 이동 */
-            list_add(&folio->lru, &demote_folios);
-            if (folio_test_active(folio))
-                folio_clear_active(folio);  // active -> inactive
-            collected += folio_pages;
-            folio_unlock(folio);
+				/* 원래 리스트에서 제거 후 demote 리스트로 이동 */
+				list_del_init(&folio->lru);           // 기존 LRU 리스트에서 제거
+				list_add_tail(&folio->lru, &demote_folios);  // tail로 넣어서 순서 유지
+
+				if (folio_test_active(folio))
+					folio_clear_active(folio);       // active → inactive
+
+				collected += folio_pages;            // 수집된 페이지 수 누적
+				folio_unlock(folio);                  // folio 잠금 해제
+
         }
         if (collected >= nr_pages_target)
             break;
