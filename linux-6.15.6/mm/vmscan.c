@@ -1138,11 +1138,10 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 }
 
 static int get_nr_gens(struct lruvec *lruvec, int type);
-
-/* mm/vmscan.c 상단(또는 force_demote_lowest_gen 앞)에 정확한 프로토타입을 추가하세요. */
 static bool isolate_folio(struct lruvec *lruvec, struct folio *folio, struct scan_control *sc);
 
 /* DRAM -> CXL 강제 디모트: 가장 오래된 MGLRU 세대부터 수집 */
+
 void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_target)
 {
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
@@ -1154,7 +1153,7 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
     pr_info("[NICE-BALANCING] force_demote_lowest_gen: Requesting %lu pages\n",
             nr_pages_target);
 
-    /* 파일 캐시 우선, 그 다음 anon */
+    /* 파일 캐시 먼저, 그 다음 anon */
     for (int type = LRU_GEN_FILE; type >= LRU_GEN_ANON; type--) {
         unsigned long nr_gens = get_nr_gens(lruvec, type);
         if (collected >= nr_pages_target)
@@ -1162,72 +1161,106 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
         if (nr_gens <= MIN_NR_GENS)
             continue;
 
-        /* oldest부터 시작, 필요 시 다음 세대로 확장 */
         for (int step = 0; step < nr_gens && collected < nr_pages_target; step++) {
             int gen = lru_gen_from_seq(lrugen->min_seq[type] + step);
 
-            /* ZONE_NORMAL 우선 검사 */
-            for (int pass = 0; pass < 2 && collected < nr_pages_target; pass++) {
-                for (int zone = 0; zone < MAX_NR_ZONES && collected < nr_pages_target; zone++) {
-                    /* pass 0에서는 ZONE_NORMAL만, pass 1에서는 나머지 존 */
-                    if (pass == 0 && zone != ZONE_NORMAL)
-                        continue;
-                    if (pass == 1 && zone == ZONE_NORMAL)
-                        continue;
+            /* 1) ZONE_NORMAL 우선 */
+            for (int zone = 0; zone < MAX_NR_ZONES && collected < nr_pages_target; zone++) {
+                if (zone != ZONE_NORMAL)
+                    continue;
 
-                    struct list_head *head = &lrugen->folios[gen][type][zone];
+                struct list_head *head = &lrugen->folios[gen][type][zone];
 
-                    /* 리스트 접근/이동은 lru_lock 아래에서 */
-                    spin_lock_irq(&lruvec->lru_lock);
+                spin_lock_irq(&lruvec->lru_lock);
 
-                    while (!list_empty(head)) {
-                        struct folio *folio = lru_to_folio(head);
-                        int delta = folio_nr_pages(folio);
+                while (!list_empty(head)) {
+                    struct folio *folio = lru_to_folio(head);
+                    int delta = folio_nr_pages(folio);
 
-                        /* scan_folios()에서 확인하는 불변식 점검 */
-                        VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
-                        VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);
-                        VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(folio) != type, folio);
-                        VM_WARN_ON_ONCE_FOLIO(folio_zonenum(folio) != zone, folio);
+                    /* 불변식 점검: scan_folios()와 동일한 체크 */
+                    VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
+                    VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);
+                    VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(folio) != type, folio);
+                    VM_WARN_ON_ONCE_FOLIO(folio_zonenum(folio) != zone, folio);
 
-                        /* DMA pinned/unevictable 스킵 */
-                        if (folio_maybe_dma_pinned(folio) || !folio_evictable(folio)) {
-                            /* scan_folios()처럼 moved 리스트를 쓰지 않고,
-                               단순히 다음 항목으로 넘어갑니다. */
-                            list_move_tail(&folio->lru, head);
-                            goto next_item;
-                        }
-
-                        /* 공용 격리 경로 사용: isolate_folio(lruvec, folio, sc) */
-                        if (isolate_folio(lruvec, folio, NULL)) {
-                            /* 격리 성공: demote_list에 추가 */
-                            list_add(&folio->lru, &demote_list);
-
-                            if (folio_test_active(folio))
-                                folio_clear_active(folio);
-
-                            collected += delta;
-
-                            if (collected >= nr_pages_target)
-                                break;
-                        } else {
-                            /* 격리 실패: scan_folios()와 유사하게 리스트 뒤로 보내 재시도 완화 */
-                            list_move_tail(&folio->lru, head);
-                        }
-
-                    next_item:
-                        /* 안전장치: 과도한 긴 루프 방지 (선택적) */
-                        if (collected >= nr_pages_target)
-                            break;
+                    /* DMA pinned 또는 evict 불가는 스킵: 뒤로 보내고 다음 */
+                    if (folio_maybe_dma_pinned(folio) || !folio_evictable(folio)) {
+                        list_move_tail(&folio->lru, head);
+                        goto next_item_normal;
                     }
 
-                    spin_unlock_irq(&lruvec->lru_lock);
+                    /* 격리 시도: vmscan의 내부 isolate 경로 활용 */
+                    if (isolate_folio(lruvec, folio, NULL)) {
+                        list_add(&folio->lru, &demote_list);
+
+                        if (folio_test_active(folio))
+                            folio_clear_active(folio);
+
+                        collected += delta;
+
+                        if (collected >= nr_pages_target)
+                            break;
+                    } else {
+                        /* 격리 실패: 뒤로 보내 재시도 빈도 완화 */
+                        list_move_tail(&folio->lru, head);
+                    }
+
+                next_item_normal:
+                    if (collected >= nr_pages_target)
+                        break;
                 }
+
+                spin_unlock_irq(&lruvec->lru_lock);
+            }
+
+            /* 2) 전체 존 fallback (ZONE_NORMAL에서 부족하면 다른 존도 훑기) */
+            for (int zone = 0; zone < MAX_NR_ZONES && collected < nr_pages_target; zone++) {
+                if (zone == ZONE_NORMAL)
+                    continue;
+
+                struct list_head *head = &lrugen->folios[gen][type][zone];
+
+                spin_lock_irq(&lruvec->lru_lock);
+
+                while (!list_empty(head)) {
+                    struct folio *folio = lru_to_folio(head);
+                    int delta = folio_nr_pages(folio);
+
+                    VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
+                    VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);
+                    VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(folio) != type, folio);
+                    VM_WARN_ON_ONCE_FOLIO(folio_zonenum(folio) != zone, folio);
+
+                    if (folio_maybe_dma_pinned(folio) || !folio_evictable(folio)) {
+                        list_move_tail(&folio->lru, head);
+                        goto next_item_other;
+                    }
+
+                    if (isolate_folio(lruvec, folio, NULL)) {
+                        list_add(&folio->lru, &demote_list);
+
+                        if (folio_test_active(folio))
+                            folio_clear_active(folio);
+
+                        collected += delta;
+
+                        if (collected >= nr_pages_target)
+                            break;
+                    } else {
+                        list_move_tail(&folio->lru, head);
+                    }
+
+                next_item_other:
+                    if (collected >= nr_pages_target)
+                        break;
+                }
+
+                spin_unlock_irq(&lruvec->lru_lock);
             }
         }
     }
 
-    /* 실제 demote 실행 (sleep 가능 컨텍스트) */
+    /* 실제 demote 실행 */
     if (!list_empty(&demote_list)) {
         unsigned int nr_demoted = demote_folio_list(&demote_list, pgdat);
         pr_info("[NICE-BALANCING] force_demote_lowest_gen: Demoted %u pages\n", nr_demoted);
@@ -1237,6 +1270,7 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
         pr_info("[NICE-BALANCING] force_demote_lowest_gen: Requested=%lu, Collected=%lu\n",
                 nr_pages_target, collected);
 }
+
 
 
 static inline int zone_idx_from_reclaim(struct lruvec *lruvec, int i)
