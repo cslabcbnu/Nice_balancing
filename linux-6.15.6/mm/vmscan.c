@@ -1137,6 +1137,8 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 	return nr_succeeded;
 }
 
+static int get_nr_gens(struct lruvec *lruvec, int type);
+
 void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_target)
 {
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
@@ -1146,10 +1148,9 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
     struct list_head demote_list;
     struct folio *folio, *next;
 
-    LIST_HEAD(demote_list);
 
     /* 1) Oldest generation 확인 */
-    for (type = 0; type < LRU_GEN_TYPES; type++) {
+    for (type = 0; type < LRU_GEN_CORE; type++) {
         if (get_nr_gens(lruvec, type) <= MIN_NR_GENS)
             continue;
 
