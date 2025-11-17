@@ -1141,61 +1141,49 @@ static int get_nr_gens(struct lruvec *lruvec, int type);
 
 void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_target)
 {
+    int type, collected = 0;
+    struct list_head demote_list;
+    LIST_HEAD(demote_list);
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
-    int oldest_gen;
-    int type, zone;
-    unsigned long collected = 0;
-    struct folio *folio, *next;
 
-	LIST_HEAD(demote_list);
+    printk(KERN_INFO "[NICE-BALANCING] force_demote_lowest_gen: Requesting %lu pages\n", nr_pages_target);
 
-    /* 1) Oldest generation 확인 */
-    for (type = 0; type < LRU_GEN_CORE; type++) {
-        if (get_nr_gens(lruvec, type) <= MIN_NR_GENS)
-            continue;
+    for (type = 0; type < 2; type++) { // LRU types: 0=ANON, 1=FILE
+        int gen = lru_gen_from_seq(lrugen->min_seq[type]);
+        struct list_head *head = &lrugen->folios[gen][type][0]; // 0번 zone 예시
+        struct folio *folio, *next;
 
-        oldest_gen = lru_gen_from_seq(lrugen->min_seq[type]);
+        list_for_each_entry_safe(folio, next, head, lru) {
+            unsigned long folio_pages = folio_nr_pages(folio);
 
-        for (zone = 0; zone < MAX_NR_ZONES; zone++) {
-            struct list_head *head = &lrugen->folios[oldest_gen][type][zone];
+            printk(KERN_INFO "[NICE-BALANCING] Inspect folio %p: pages=%lu evictable=%d dirty=%d writeback=%d mapped=%d active=%d",
+                   folio, folio_pages, folio_evictable(folio),
+                   folio_test_dirty(folio), folio_test_writeback(folio),
+                   folio_mapped(folio), folio_test_active(folio));
 
-            list_for_each_entry_safe(folio, next, head, lru) {
-
-                /* 이미 요청량 채우면 종료 */
-                if (collected >= nr_pages_target)
-                    goto done;
-
-                /* tmpfs 등 pin된 folio는 제외 */
-                if (folio_maybe_dma_pinned(folio))
-                    continue;
-
-                /* folio 잠금 후 demote 리스트로 이동 */
-                if (!folio_trylock(folio))
-                    continue;
-
-                list_del_init(&folio->lru);
-                list_add_tail(&folio->lru, &demote_list);
-
-                if (folio_test_active(folio))
-                    folio_clear_active(folio);
-
-                collected += folio_nr_pages(folio);
-                folio_unlock(folio);
+            if (!folio_evictable(folio)) {
+                printk(KERN_INFO "[NICE-BALANCING] Skipping folio %p: not evictable\n", folio);
+                continue;
             }
+
+            list_del_init(&folio->lru);
+            list_add_tail(&folio->lru, &demote_list);
+            collected += folio_pages;
+
+            if (collected >= nr_pages_target)
+                break;
         }
+
+        if (collected >= nr_pages_target)
+            break;
     }
 
-done:
-    /* demote 실행 */
+    printk(KERN_INFO "[NICE-BALANCING] force_demote_lowest_gen: Collected %d pages (requested %lu)\n",
+           collected, nr_pages_target);
+
     if (!list_empty(&demote_list)) {
-        struct pglist_data *pgdat = lruvec_pgdat(lruvec);
-        unsigned int nr_demoted = demote_folio_list(&demote_list, pgdat);
-        printk(KERN_INFO "[NICE-BALANCING] force_demote_lowest_gen: Demoted %u pages\n", nr_demoted);
+        demote_folio_list(&demote_list, lruvec_pgdat(lruvec));
     }
-
-    if (collected < nr_pages_target)
-        printk(KERN_INFO "[NICE-BALANCING] force_demote_lowest_gen: Could not collect all requested pages. Requested=%lu, Collected=%lu\n",
-               nr_pages_target, collected);
 }
 
 static bool may_enter_fs(struct folio *folio, gfp_t gfp_mask)
