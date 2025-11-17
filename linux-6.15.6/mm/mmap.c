@@ -389,7 +389,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
             if (lruvec) {
                 printk(KERN_INFO "[NICE-BALANCING] do_mmap: Demote requested %lu pages for nice %d process\n",
                        nr_pages, nice_val);
-                force_demote_lowest_gen(lruvec, nr_pages);
+                force_demote_by_priority(dram_nid, nr_pages, nice_val);
             } else {
                 printk(KERN_INFO "[NICE-BALANCING] do_mmap: Could not get lruvec for nid=%d\n", dram_nid);
             }

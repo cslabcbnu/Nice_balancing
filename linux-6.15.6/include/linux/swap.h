@@ -452,7 +452,9 @@ static inline unsigned long total_swapcache_pages(void)
 void free_swap_cache(struct folio *folio);
 void free_page_and_swap_cache(struct page *);
 void free_pages_and_swap_cache(struct encoded_page **, int);
-void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_target);
+void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_target, int requester_nice);
+void force_demote_by_priority(int nid, unsigned long nr_pages, int requester_nice);
+
 /* linux/mm/swapfile.c */
 extern atomic_long_t nr_swap_pages;
 extern long total_swap_pages;
