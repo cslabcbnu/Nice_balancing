@@ -1145,9 +1145,9 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
     int oldest_gen;
     int type, zone;
     unsigned long collected = 0;
-    struct list_head demote_list;
     struct folio *folio, *next;
 
+	LIST_HEAD(demote_list);
 
     /* 1) Oldest generation 확인 */
     for (type = 0; type < LRU_GEN_CORE; type++) {
