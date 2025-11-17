@@ -1146,19 +1146,26 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
     int type, zone;
     unsigned long collected = 0;
     struct folio *folio, *next;
-
     LIST_HEAD(demote_list);
 
     printk(KERN_INFO "[NICE-BALANCING] force_demote_lowest_gen: Requesting %lu pages\n", nr_pages_target);
 
+    // lruvec와 lrugen 포인터 확인
+    if (!lruvec || !lrugen) {
+        printk(KERN_ERR "[ERROR] lruvec or lrugen is NULL!\n");
+        return;
+    }
+
     /* 1) Oldest generation 확인 */
-    for (type = 0; type < LRU_GEN_CORE; type++) {
+    for (type = 0; type < ANON_AND_FILE; type++) {  // LRU_GEN_CORE 대신 ANON_AND_FILE (보통 2)
         unsigned long nr_gens = get_nr_gens(lruvec, type);
+        
         printk(KERN_INFO "[DEBUG] type=%d, nr_gens=%lu, min_seq=%llu\n",
                type, nr_gens, (unsigned long long)lrugen->min_seq[type]);
 
         if (nr_gens <= MIN_NR_GENS) {
-            printk(KERN_INFO "[DEBUG] type=%d skipped (nr_gens <= MIN_NR_GENS)\n", type);
+            printk(KERN_INFO "[DEBUG] type=%d skipped (nr_gens=%lu <= MIN_NR_GENS=%d)\n", 
+                   type, nr_gens, MIN_NR_GENS);
             continue;
         }
 
@@ -1167,16 +1174,23 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
 
         for (zone = 0; zone < MAX_NR_ZONES; zone++) {
             struct list_head *head = &lrugen->folios[oldest_gen][type][zone];
+            int is_empty = list_empty(head);
+            
             printk(KERN_INFO "[DEBUG] type=%d, zone=%d, list_empty=%d\n",
-                   type, zone, list_empty(head));
+                   type, zone, is_empty);
+
+            if (is_empty)
+                continue;
 
             list_for_each_entry_safe(folio, next, head, lru) {
-
-                printk(KERN_INFO "[DEBUG] folio found: %p, pages=%lu\n", folio, folio_nr_pages(folio));
+                printk(KERN_INFO "[DEBUG] folio found: %p, pages=%lu\n", 
+                       folio, folio_nr_pages(folio));
 
                 /* 이미 요청량 채우면 종료 */
-                if (collected >= nr_pages_target)
+                if (collected >= nr_pages_target) {
+                    printk(KERN_INFO "[DEBUG] Target reached, collected=%lu\n", collected);
                     goto done;
+                }
 
                 /* tmpfs 등 pin된 folio는 제외 */
                 if (folio_maybe_dma_pinned(folio)) {
@@ -1197,7 +1211,8 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
                     folio_clear_active(folio);
 
                 collected += folio_nr_pages(folio);
-                printk(KERN_INFO "[DEBUG] folio %p collected, total_collected=%lu\n", folio, collected);
+                printk(KERN_INFO "[DEBUG] folio %p collected, total_collected=%lu\n", 
+                       folio, collected);
 
                 folio_unlock(folio);
             }
@@ -1213,12 +1228,11 @@ done:
     }
 
     if (collected < nr_pages_target)
-        printk(KERN_INFO "[NICE-BALANCING] force_demote_lowest_gen: Could not collect all requested pages. Requested=%lu, Collected=%lu\n",
+        printk(KERN_INFO "[NICE-BALANCING] Could not collect all. Requested=%lu, Collected=%lu\n",
                nr_pages_target, collected);
     else
-        printk(KERN_INFO "[NICE-BALANCING] force_demote_lowest_gen: Successfully collected %lu pages\n", collected);
+        printk(KERN_INFO "[NICE-BALANCING] Successfully collected %lu pages\n", collected);
 }
-
 
 static bool may_enter_fs(struct folio *folio, gfp_t gfp_mask)
 {
