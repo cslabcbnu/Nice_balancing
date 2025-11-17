@@ -1142,12 +1142,7 @@ static bool isolate_folio(struct lruvec *lruvec, struct folio *folio, struct sca
 
 /**
  * force_demote_lowest_gen_scan - 가장 오래된 generation에서 folio 격리
- * @lruvec: LRU vector
- * @nr_to_scan: 격리할 최대 folio 수
- * @list: 격리된 folio를 모을 임시 리스트
- *
- * scan_folios 패턴을 따라 oldest generation에서 folio 격리
- * Return: 격리된 folio 수
+ * (evict_folios/scan_folios 패턴 준수)
  */
 static int force_demote_lowest_gen_scan(struct lruvec *lruvec, unsigned long nr_to_scan, struct list_head *list)
 {
@@ -1158,7 +1153,7 @@ static int force_demote_lowest_gen_scan(struct lruvec *lruvec, unsigned long nr_
     int isolated = 0;
     int remaining = nr_to_scan;
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
-    struct folio *folio, *next;
+    struct folio *folio;
 
     VM_WARN_ON_ONCE(!list_empty(list));
 
@@ -1244,23 +1239,18 @@ static int force_demote_lowest_gen_scan(struct lruvec *lruvec, unsigned long nr_
 
 /**
  * force_demote_lowest_gen - MGLRU oldest generation에서 강제 디모션
- * @lruvec: LRU vector
- * @nr_pages_target: 디모션 목표 페이지 수
- * @requester_nice: 요청 프로세스의 nice 값 (로깅 목적)
- *
- * evict_folios 패턴을 따라:
- * 1. spin_lock_irq으로 보호된 상태에서 scan
- * 2. 격리된 folio를 demote_folio_list로 실제 migration
- * 3. 실패 folio는 LRU로 복원
+ * (evict_folios 패턴 준수)
  */
 void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_target, int requester_nice)
 {
     int scanned;
     int demoted = 0;
     LIST_HEAD(list);
-    struct folio *folio, *next;
+    struct folio *folio;
+    struct folio *next;
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
     struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+    DEFINE_MIN_SEQ(lruvec);
 
     if (!lruvec || !lrugen || !pgdat) {
         printk(KERN_ERR "[ERROR] Invalid lruvec/lrugen/pgdat\n");
@@ -1280,7 +1270,7 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
         return;
     }
 
-    printk(KERN_INFO "[DEMOTE] Isolated %u folios, attempting demotion...\n", 
+    printk(KERN_INFO "[DEMOTE] Isolated %u folios, attempting demotion...\n",
            scanned);
 
     /* Step 1: demote_folio_list로 실제 migration 시도 */
@@ -1295,31 +1285,35 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
     list_for_each_entry_safe_reverse(folio, next, &list, lru) {
         /* 디모션에 실패한 folio: 원래 상태 복원 */
         if (!folio_evictable(folio)) {
-            /* 혹시 모르니 unevictable 체크 */
+            /* unevictable 체크 */
             list_del(&folio->lru);
             folio_putback_lru(folio);
             continue;
         }
 
         /* Dirty/writeback 상태 재확인 후 처리 */
-        if (!folio_mapped(folio) && !folio_test_dirty(folio) && 
+        if (!folio_mapped(folio) && !folio_test_dirty(folio) &&
             !folio_test_writeback(folio)) {
-            /* Clean 상태: youngest generation으로 이동 */
+            /* Clean 상태: active 플래그 설정 (youngest generation으로) */
             set_mask_bits(&folio->flags, LRU_REFS_FLAGS, BIT(PG_active));
         }
+
+        /* 오래된 generation에 남지 않도록 */
+        if (lru_gen_folio_seq(lruvec, folio, false) == min_seq[folio_is_file_lru(folio)])
+            set_mask_bits(&folio->flags, LRU_REFS_FLAGS, BIT(PG_active));
     }
 
     /* 디모션 실패 folio를 LRU로 복원 */
-    move_folios_to_lru(lruvec, &list);
+    list_for_each_entry_safe(folio, next, &list, lru) {
+        list_del(&folio->lru);
+        folio_putback_lru(folio);
+    }
 
     spin_unlock_irq(&lruvec->lru_lock);
 }
 
 /**
- * wrapper: do_mmap 또는 높은 우선순위 프로세스에서 호출
- * @nid: DRAM node ID
- * @nr_pages: 요청 페이지 수
- * @requester_nice: 요청 프로세스 nice 값
+ * force_demote_by_priority - wrapper: do_mmap에서 호출
  */
 void force_demote_by_priority(int nid, unsigned long nr_pages, int requester_nice)
 {
