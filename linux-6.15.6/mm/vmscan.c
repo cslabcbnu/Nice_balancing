@@ -1142,7 +1142,6 @@ static int get_nr_gens(struct lruvec *lruvec, int type);
 void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_target)
 {
     int type, collected = 0;
-    struct list_head demote_list;
     LIST_HEAD(demote_list);
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
 
