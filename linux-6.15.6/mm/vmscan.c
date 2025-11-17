@@ -1195,6 +1195,8 @@ void force_demote_low_priority_pages(int nid, unsigned long nr_pages_requested, 
                 continue;
             }
 
+			printk(KERN_INFO "[NICE-BALANCING] Scanning folio %p pages=%lu evictable=%d pinned=%d\n", folio, folio_nr_pages(folio), folio_evictable(folio), folio_maybe_dma_pinned(folio));
+
             /* evictable, not pinned check */
             if (!folio_evictable(folio) || folio_maybe_dma_pinned(folio)) {
                 printk(KERN_INFO "[NICE-BALANCING] folio %p not evictable or pinned\n", folio);
