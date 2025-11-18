@@ -277,29 +277,6 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 	return true;
 }
 
-// --[hayong]--
-static inline bool dram_is_under_pressure(int nid, unsigned int request_pages)
-{
-    struct zone *zone = &NODE_DATA(nid)->node_zones[ZONE_NORMAL];
-
-    /*
-     * DRAM Zone에서 request_pages 를 HIGH 워터마크 기준으로
-     * 바로 할당 가능할지 확인.
-     *
-     * zone_watermark_ok() = true  → DRAM에서 정상 할당 가능
-     * zone_watermark_ok() = false → DRAM 부족 → 곧바로 CXL fallback 발생
-     */
-    if (!zone_watermark_ok(zone,
-                           request_pages,
-                           zone->_watermark[WMARK_HIGH],
-                           0, /* alloc flags */
-                           0  /* classzone_idx */
-                           ))
-        return true;   // DRAM 압박 → fallback 직전 → demote 필요
-
-    return false;
-}
-
 bool demote_enabled = false;
 
 /**
@@ -375,7 +352,6 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	if (!len)
 		return -EINVAL;
 
-
 	if(demote_enabled) 
 	{
 		if (current->mm && len > 0) {
@@ -384,7 +360,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
         unsigned long nr_pages = len >> PAGE_SHIFT;
 
         /* DRAM 압력 체크 */
-        if (dram_is_under_pressure(dram_nid, nr_pages) && nice_val < 0) {
+        if (nice_val < 0) {
             struct pglist_data *pgdat = NODE_DATA(dram_nid);
             struct lruvec *lruvec = mem_cgroup_lruvec(NULL, pgdat);
 
