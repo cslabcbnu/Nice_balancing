@@ -7896,9 +7896,6 @@ void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_targe
 
     /* 이제 lrugen, DEFINE_MIN_SEQ 안전 사용 가능 */
     {
-        struct lru_gen_folio *lrugen = &lruvec->lrugen;
-        DEFINE_MIN_SEQ(lruvec);
-
         /* evict_folios 패턴: spin_lock_irq 범위 내에서 scan */
         spin_lock_irq(&lruvec->lru_lock);
 
