@@ -7776,76 +7776,52 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
  * force_demote_lowest_gen_scan - 가장 오래된 generation에서 folio 격리
  * (evict_folios/scan_folios 패턴 준수)
  */
-static int force_demote_lowest_gen_scan(struct lruvec *lruvec, unsigned long nr_to_scan, struct list_head *list)
+/**
+ * force_demote_lowest_gen_scan - oldest generation folio 격리
+ */
+static int force_demote_lowest_gen_scan(struct lruvec *lruvec,
+                                        unsigned long nr_to_scan,
+                                        struct list_head *dst)
 {
-    int i;
-    int gen;
-    int type;
-    int scanned = 0;
-    int isolated = 0;
-    int remaining = nr_to_scan;
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
-    struct folio *folio;
+    struct folio *folio, *next;
+    int type, gen, scanned = 0, isolated = 0;
+    int remaining = nr_to_scan;
 
-    VM_WARN_ON_ONCE(!list_empty(list));
+    LIST_HEAD(moved);      /* 임시로 건너뛴 folio */
 
-    /* Oldest generation 확인 */
     for (type = 0; type < ANON_AND_FILE; type++) {
         if (get_nr_gens(lruvec, type) <= MIN_NR_GENS)
             continue;
 
         gen = lru_gen_from_seq(lrugen->min_seq[type]);
 
-        /* Zone 순회 (역순) */
-        for (i = MAX_NR_ZONES; i > 0; i--) {
-            int zone = (i - 1) % MAX_NR_ZONES;
+        for (int zone = 0; zone < MAX_NR_ZONES; zone++) {
             struct list_head *head = &lrugen->folios[gen][type][zone];
-            LIST_HEAD(moved);
 
-            /* 각 zone의 oldest generation에서 folio 격리 */
-            while (!list_empty(head)) {
-                folio = lru_to_folio(head);
+            list_for_each_entry_safe(folio, next, head, lru) {
                 int delta = folio_nr_pages(folio);
-
-                /* 커널 표준: unevictable/active 체크 */
-                VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
-                VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);
-                VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(folio) != type, folio);
-                VM_WARN_ON_ONCE_FOLIO(folio_zonenum(folio) != zone, folio);
-
                 scanned += delta;
 
-                /* 1. Unevictable은 절대 제외 */
-                if (folio_test_unevictable(folio)) {
+                /* Unevictable, DMA pinned, trylock 체크 */
+                if (folio_test_unevictable(folio) ||
+                    folio_maybe_dma_pinned(folio) ||
+                    !folio_trylock(folio)) {
                     list_move(&folio->lru, &moved);
                     continue;
                 }
 
-                /* 2. DMA pinned 제외 */
-                if (folio_maybe_dma_pinned(folio)) {
-                    list_move(&folio->lru, &moved);
-                    continue;
-                }
-
-                /* 3. Trylock 시도 */
-                if (!folio_trylock(folio)) {
-                    list_move(&folio->lru, &moved);
-                    continue;
-                }
-
-                /* 4. Evictable 최종 확인 */
                 if (!folio_evictable(folio)) {
                     folio_unlock(folio);
                     list_move(&folio->lru, &moved);
                     continue;
                 }
 
-                /* 5. Active 상태 제거 */
                 if (folio_test_active(folio))
                     folio_clear_active(folio);
 
-                /* 6. 임시 리스트에 추가 (원본 리스트에서 제거) */
-                list_add(&folio->lru, list);
+                /* 임시 리스트로 이동 */
+                list_add(&folio->lru, dst);
                 isolated += delta;
 
                 folio_unlock(folio);
@@ -7854,9 +7830,10 @@ static int force_demote_lowest_gen_scan(struct lruvec *lruvec, unsigned long nr_
                     break;
             }
 
-            /* 필터링된 folio들 다시 원본 리스트에 복원 */
-            if (!list_empty(&moved))
+            /* 다시 원본 리스트 복원 */
+            if (!list_empty(&moved)) {
                 list_splice(&moved, head);
+            }
 
             if (!remaining || isolated >= MIN_LRU_BATCH)
                 break;
@@ -7870,134 +7847,91 @@ static int force_demote_lowest_gen_scan(struct lruvec *lruvec, unsigned long nr_
 }
 
 /**
- * force_demote_lowest_gen - MGLRU oldest generation에서 강제 디모션
- * (evict_folios 패턴 준수)
+ * force_demote_lowest_gen - oldest generation folio 강제 디모션
  */
-void force_demote_lowest_gen(struct lruvec *lruvec, unsigned long nr_pages_target, int requester_nice)
+void force_demote_lowest_gen(struct lruvec *lruvec,
+                             unsigned long nr_pages_target,
+                             int requester_nice)
 {
-    int scanned;
-    int demoted = 0;
     LIST_HEAD(list);
-    struct folio *folio;
-    struct folio *next;
+    int scanned = 0, demoted = 0;
+    struct folio *folio, *next;
     struct pglist_data *pgdat;
 
-    /* 먼저 lruvec 유효성 검사 (lrugen/pgdat 접근 이전에) */
-    if (!lruvec) {
-        printk(KERN_ERR "[ERROR] force_demote_lowest_gen: lruvec is NULL\n");
+    if (!lruvec)
         return;
-    }
 
     pgdat = lruvec_pgdat(lruvec);
-    if (!pgdat) {
-        printk(KERN_ERR "[ERROR] force_demote_lowest_gen: pgdat is NULL for lruvec=%p\n", lruvec);
+    if (!pgdat)
         return;
-    }
 
-    /* 이제 lrugen, DEFINE_MIN_SEQ 안전 사용 가능 */
-    {
-        /* evict_folios 패턴: spin_lock_irq 범위 내에서 scan */
-        spin_lock_irq(&lruvec->lru_lock);
+    spin_lock_irq(&lruvec->lru_lock);
+    scanned = force_demote_lowest_gen_scan(lruvec, nr_pages_target, &list);
+    spin_unlock_irq(&lruvec->lru_lock);
 
-        /* Oldest generation에서 folio 격리 */
-        scanned = force_demote_lowest_gen_scan(lruvec, nr_pages_target, &list);
-
-        spin_unlock_irq(&lruvec->lru_lock);
-    }
-
-    if (list_empty(&list)) {
-        printk(KERN_INFO "[DEMOTE] No folios isolated from oldest generation\n");
+    if (list_empty(&list))
         return;
-    }
 
-    printk(KERN_INFO "[DEMOTE] Isolated %u folios, attempting demotion...\n", scanned);
-
-    /* Step 1: demote_folio_list로 실제 migration 시도 */
+    /* 실제 folio 디모션 수행 */
     demoted = demote_folio_list(&list, pgdat);
 
-    printk(KERN_INFO "[DEMOTE] Demotion complete: demoted=%d, scanned=%d\n", demoted, scanned);
-
-    /* Step 2: 디모션 실패 folio 처리 (evict_folios 패턴) */
+    /* 실패 folio 처리 */
     spin_lock_irq(&lruvec->lru_lock);
+    list_for_each_entry_safe(folio, next, &list, lru) {
+        list_del(&folio->lru);
 
-    list_for_each_entry_safe_reverse(folio, next, &list, lru) {
+        /* evictable 아닌 경우 원래 LRU로 복원 */
         if (!folio_evictable(folio)) {
-            list_del(&folio->lru);
             folio_putback_lru(folio);
             continue;
         }
 
+        /* Clean folio는 active로 표시 */
         if (!folio_mapped(folio) && !folio_test_dirty(folio) &&
             !folio_test_writeback(folio)) {
             set_mask_bits(&folio->flags, LRU_REFS_FLAGS, BIT(PG_active));
         }
 
-        /* min_seq 접근을 위해 현재 lruvec/DEFINE_MIN_SEQ 블록에서 min_seq를 복사했어야 한다.
-         * 위에서 DEFINE_MIN_SEQ는 지역 스코프였으므로 여기서 보이지 않을 수 있음.
-         * 따라서 min_seq가 여기서 필요하면 DEFINE_MIN_SEQ를 더 넓은 스코프로 옮기거나
-         * min_seq 값을 위에서 로컬 배열로 꺼내 저장해두고 여기서 비교해야 함.
-         */
-        /* 예: if (lru_gen_folio_seq(lruvec, folio, false) == saved_min_seq[folio_is_file_lru(folio)]) ... */
-    }
-
-    /* 복원 루틴 (위와 동일) */
-    list_for_each_entry_safe(folio, next, &list, lru) {
-        list_del(&folio->lru);
         folio_putback_lru(folio);
     }
-
     spin_unlock_irq(&lruvec->lru_lock);
 }
 
 /**
- * force_demote_by_priority - wrapper: do_mmap에서 호출
+ * force_demote_by_priority - do_mmap 등에서 호출
  */
 void force_demote_by_priority(int nid, unsigned long nr_pages, int requester_nice)
 {
-    struct pglist_data *pgdat;
+    struct pglist_data *pgdat = NULL;
     struct lruvec *lruvec = NULL;
-
 #ifdef CONFIG_MEMCG
     struct mem_cgroup *memcg = NULL;
-    struct mm_struct *mm = current->mm;
+#endif
 
-    if (!mm) {
-        printk(KERN_ERR "[DEMOTE] current->mm is NULL (kernel thread?), abort\n");
-        return;
-    }
-
-    /* safe node selection: use supplied nid if valid, otherwise pick mm->node */
+    /* nid 유효성 검사 */
     if (nid < 0 || nid >= MAX_NUMNODES)
-        nid = cpumask_first(mm_cpumask(mm)); /* fallback */
+        nid = 0;
 
     pgdat = NODE_DATA(nid);
-    if (!pgdat) {
-        printk(KERN_ERR "[DEMOTE] NODE_DATA(%d) returned NULL\n", nid);
+    if (!pgdat)
         return;
-    }
+
+#ifdef CONFIG_MEMCG
+    struct mm_struct *mm = current->mm;
+    if (!mm)
+        return;
 
     memcg = get_mem_cgroup_from_mm(mm);
-    /* get_mem_cgroup_from_mm may return NULL if memcg disabled for mm */
-    if (!memcg) {
-        /* fallback to node-level lruvec */
-        lruvec = &pgdat->__lruvec;
-    } else {
+    if (memcg)
         lruvec = mem_cgroup_lruvec(memcg, pgdat);
-    }
+    else
+        lruvec = &pgdat->__lruvec;
 #else
-    /* no memcg: use node-level lruvec */
-    pgdat = NODE_DATA(nid);
-    if (!pgdat) {
-        printk(KERN_ERR "[DEMOTE] NODE_DATA(%d) returned NULL\n", nid);
-        return;
-    }
     lruvec = &pgdat->__lruvec;
 #endif
 
-    if (!lruvec) {
-        printk(KERN_ERR "[DEMOTE] Could not obtain lruvec (nid=%d)\n", nid);
+    if (!lruvec)
         return;
-    }
 
     printk(KERN_INFO "[DEMOTE] Requesting demotion: pages=%lu, nice=%d, nid=%d, lruvec=%p\n",
            nr_pages, requester_nice, nid, lruvec);
@@ -8006,7 +7940,7 @@ void force_demote_by_priority(int nid, unsigned long nr_pages, int requester_nic
 
 #ifdef CONFIG_MEMCG
     if (memcg)
-        mem_cgroup_put(memcg); /* balance get_mem_cgroup_from_mm() if it took a ref */
+        mem_cgroup_put(memcg);
 #endif
 }
 
