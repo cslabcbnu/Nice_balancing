@@ -300,7 +300,15 @@ static inline bool dram_is_under_pressure(int nid, unsigned int request_pages)
     return false;
 }
 
+static bool demote_enabled = false;
 
+static int enable_demote_late_init(void)
+{
+    demote_enabled = true;
+    printk(KERN_INFO "[DEMOTE] Demotion enabled (late_initcall)\n");
+    return 0;
+}
+late_initcall(enable_demote_late_init);
 
 /**
  * do_mmap() - Perform a userland memory mapping into the current process
@@ -376,7 +384,9 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		return -EINVAL;
 
 
-	if (current->mm && len > 0) {
+	if(demote_enabled) 
+	{
+		if (current->mm && len > 0) {
         int nice_val = task_nice(current);
         int dram_nid = 0; // hayong - dram 노드 아이디 설정 필요
         unsigned long nr_pages = len >> PAGE_SHIFT;
@@ -390,11 +400,13 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
                 printk(KERN_INFO "[NICE-BALANCING] do_mmap: Demote requested %lu pages for nice %d process\n",
                        nr_pages, nice_val);
                 force_demote_by_priority(dram_nid, nr_pages, nice_val);
-            } else {
+            	} else {
                 printk(KERN_INFO "[NICE-BALANCING] do_mmap: Could not get lruvec for nid=%d\n", dram_nid);
-            }
-        }
-    }
+            	}
+        	}
+    	}
+	}	
+	
 		
 	
 	/*
