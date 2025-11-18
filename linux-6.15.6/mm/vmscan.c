@@ -1332,13 +1332,6 @@ void force_demote_by_priority(int nid, unsigned long nr_pages, int requester_nic
     force_demote_lowest_gen(lruvec, nr_pages, requester_nice);
 }
 
-static inline int zone_idx_from_reclaim(struct lruvec *lruvec, int i)
-{
-    struct scan_control *sc = lruvec_scan_control(lruvec);
-    return (sc->reclaim_idx + i) % MAX_NR_ZONES;
-}
-
-
 static bool may_enter_fs(struct folio *folio, gfp_t gfp_mask)
 {
 	if (gfp_mask & __GFP_FS)
