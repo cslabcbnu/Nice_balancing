@@ -300,15 +300,7 @@ static inline bool dram_is_under_pressure(int nid, unsigned int request_pages)
     return false;
 }
 
-static bool demote_enabled = false;
-
-static int enable_demote_late_init(void)
-{
-    demote_enabled = true;
-    printk(KERN_INFO "[DEMOTE] Demotion enabled (late_initcall)\n");
-    return 0;
-}
-late_initcall(enable_demote_late_init);
+bool demote_enabled = false;
 
 /**
  * do_mmap() - Perform a userland memory mapping into the current process
