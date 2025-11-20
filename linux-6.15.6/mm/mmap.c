@@ -277,8 +277,6 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 	return true;
 }
 
-bool demote_enabled = false;
-
 /**
  * do_mmap() - Perform a userland memory mapping into the current process
  * address space of length @len with protection bits @prot, mmap flags @flags
@@ -352,29 +350,15 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	if (!len)
 		return -EINVAL;
 
-	if(demote_enabled) 
-	{
-		if (current->mm && len > 0) {
+    if (demote_enabled && len > 0) {
         int nice_val = task_nice(current);
-        int dram_nid = 0; // hayong - dram 노드 아이디 설정 필요
-        unsigned long nr_pages = len >> PAGE_SHIFT;
-
-        /* DRAM 압력 체크 */
         if (nice_val < 0) {
-            struct pglist_data *pgdat = NODE_DATA(dram_nid);
-            struct lruvec *lruvec = mem_cgroup_lruvec(NULL, pgdat);
-
-            if (lruvec) {
-                printk(KERN_INFO "[NICE-BALANCING] do_mmap: Demote requested %lu pages for nice %d process\n",
-                       nr_pages, nice_val);
-                force_demote_by_priority(dram_nid, nr_pages, nice_val);
-            	} else {
-                printk(KERN_INFO "[NICE-BALANCING] do_mmap: Could not get lruvec for nid=%d\n", dram_nid);
-            	}
-        	}
-    	}
-	}	
-	
+            unsigned long nr_pages = len >> PAGE_SHIFT;
+            int dram_nid = 0;  /* DRAM 노드 ID 지정, 필요시 변경 */
+            printk(KERN_INFO "[NICE-BALANCING] do_mmap: Demote request %lu pages for nice %d process on nid %d\n", nr_pages, nice_val, dram_nid);
+            force_demote_pages(dram_nid, nr_pages, nice_val);
+        }
+    }
 		
 	
 	/*
