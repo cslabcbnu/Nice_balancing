@@ -355,6 +355,7 @@ static bool can_demote(int nid, struct scan_control *sc)
 		return false;
 
 	demote_enabled = true;
+	printk(KERN_INFO "[DEMOTE] can_demote: Demotion enabled\n");
 	return true;
 }
 
@@ -7806,10 +7807,6 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
 
     /* scan_control 세팅 */
     sc.nr_to_reclaim = nr_pages;  // <- 기존 nr_to_scan 대신
-    sc.priority = nice_val;       // optional
-    sc.may_unmap = 1;
-    sc.may_writepage = 1;
-    sc.reclaim_idx = 0;
 
     printk(KERN_INFO "[DEMOTE] do_mmap: Demote request %lu pages for nice %d process on nid %d\n",
            nr_pages, nice_val, nid);
