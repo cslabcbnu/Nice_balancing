@@ -7780,7 +7780,6 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     struct scan_control sc = {0};
     int scanned;
 
-    /* NUMA 노드 확인 */
     if (nid < 0 || nid >= MAX_NUMNODES)
         nid = 0;
 
@@ -7805,21 +7804,20 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     if (!lruvec)
         return;
 
-    /* scan_control 세팅: 원하는 페이지 수만큼만 demote */
-    sc.nr_to_scan = nr_pages;
-    sc.priority = nice_val;          /* optional: priority 기록 */
-    sc.may_unmap = 1;                /* unmapped folio 대상 */
-    sc.may_writepage = 1;            /* dirty page 포함 */
-    sc.reclaim_idx = 0;              /* evict_folios 내부에서 사용 */
-    sc.reclaim_type = RECLAIM_FREE;  /* 기본 reclaim 타입 */
+    /* scan_control 세팅 */
+    sc.nr_to_reclaim = nr_pages;  // <- 기존 nr_to_scan 대신
+    sc.priority = nice_val;       // optional
+    sc.may_unmap = 1;
+    sc.may_writepage = 1;
+    sc.reclaim_idx = 0;
 
     printk(KERN_INFO "[DEMOTE] do_mmap: Demote request %lu pages for nice %d process on nid %d\n",
            nr_pages, nice_val, nid);
 
-    /* 실제 MGLRU oldest generation folio demotion */
     scanned = evict_folios(lruvec, &sc, 0 /* swappiness */);
 
     printk(KERN_INFO "[DEMOTE] do_mmap: Demotion done, scanned=%d pages\n", scanned);
 }
+
 
 EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
