@@ -355,7 +355,6 @@ static bool can_demote(int nid, struct scan_control *sc)
 		return false;
 
 	demote_enabled = true;
-	printk(KERN_INFO "[DEMOTE] can_demote: Demotion enabled\n");
 	return true;
 }
 
@@ -7774,12 +7773,148 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
 	}
 }
 
+/* Set default target CXL node here — change as needed */
+#ifndef DEMOTE_TARGET_NID
+#define DEMOTE_TARGET_NID 1
+#endif
+
+/* Small helper: safe move folio back to a moved list */
+static inline void __move_folio_to_moved(struct folio *folio, struct list_head *moved)
+{
+    /* Move to moved (preserves list integrity) */
+    list_move_tail(&folio->lru, moved);
+}
+
+/*
+ * Scan oldest generation folios and isolate up to nr_to_scan pages,
+ * putting isolated folios onto `list`.
+ *
+ * Returns number of pages isolated (summed folio_nr_pages).
+ *
+ * IMPORTANT:
+ *  - Caller must hold lruvec->lru_lock (spin_lock_irqsave/restore) while calling.
+ *  - This function will try folio_trylock() and will folio_unlock() before returning
+ *    control to caller. Isolated folios are removed from original LRU.
+ */
+static int force_demote_lowest_gen_scan(struct lruvec *lruvec,
+                                        unsigned long nr_to_scan,
+                                        struct list_head *list)
+{
+    int i, gen, type;
+    int isolated_pages = 0;
+    long remaining = (long)nr_to_scan;
+    struct lru_gen_folio *lrugen = &lruvec->lrugen;
+
+    VM_WARN_ON_ONCE(!list_empty(list));
+
+    /* Iterate both anon and file types (LRU generations) */
+#if defined(LRU_GEN_TYPES)
+    for (type = 0; type < LRU_GEN_TYPES; type++) {
+#else
+    /* Fallback in case constant differs by tree */
+    for (type = 0; type < 2; type++) {
+#endif
+        if (get_nr_gens(lruvec, type) <= MIN_NR_GENS)
+            continue;
+
+        gen = lru_gen_from_seq(lrugen->min_seq[type]);
+
+        /* iterate zones (preserve order used by scan_folios) */
+        for (i = MAX_NR_ZONES; i > 0; i--) {
+            int zone = (i - 1) % MAX_NR_ZONES;
+            struct list_head *head = &lrugen->folios[gen][type][zone];
+            LIST_HEAD(moved);
+
+            while (!list_empty(head)) {
+                struct folio *folio = lru_to_folio(head);
+                int delta = folio_nr_pages(folio);
+
+                /*
+                 * Quick checks: if folio obviously shouldn't be migrated,
+                 * move it to moved and continue.
+                 */
+
+                /* Unevictable (mlock, reserved, etc.) */
+                if (folio_test_unevictable(folio)) {
+                    __move_folio_to_moved(folio, &moved);
+                    continue;
+                }
+
+                /* DMA pinned (GUP/DMA) */
+                if (folio_maybe_dma_pinned(folio)) {
+                    __move_folio_to_moved(folio, &moved);
+                    continue;
+                }
+
+                /* Try to lock the folio; if can't, skip it for now */
+                if (!folio_trylock(folio)) {
+                    __move_folio_to_moved(folio, &moved);
+                    continue;
+                }
+
+                /* Additional check: evictable (if API exists). If not, assume ok. */
+#if defined(folio_evictable)
+                if (!folio_evictable(folio)) {
+                    folio_unlock(folio);
+                    __move_folio_to_moved(folio, &moved);
+                    continue;
+                }
+#endif
+
+                /*
+                 * Isolate: remove from original LRU and attach to 'list'
+                 * NOTE: we are under lru_lock so list_del_init is safe.
+                 */
+                list_del_init(&folio->lru);
+                list_add_tail(&folio->lru, list);
+                isolated_pages += delta;
+
+                /* release folio lock now; migrate will re-acquire when needed */
+                folio_unlock(folio);
+
+                /* progress checks */
+                if (!--remaining || isolated_pages >= MIN_LRU_BATCH)
+                    break;
+            } /* end while head */
+
+            /* put moved entries back onto head (preserve original order) */
+            if (!list_empty(&moved))
+                list_splice_tail(&moved, head);
+
+            if (!remaining || isolated_pages >= MIN_LRU_BATCH)
+                break;
+        } /* end for zones */
+
+        if (!remaining || isolated_pages >= MIN_LRU_BATCH)
+            break;
+    } /* end for types */
+
+    return isolated_pages;
+}
+
+/*
+ * force_demote_pages:
+ *  - nid: source node (where to collect from)
+ *  - nr_pages: target number of pages to collect and migrate
+ *  - nice_val: just for logging/decision (unused in this function's logic)
+ *
+ * Notes:
+ *  - Caller context must be safe to take lruvec->lru_lock. This function
+ *    will take and release it briefly for collection only. migrate_pages()
+ *    is called with locks released.
+ */
 void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
 {
     struct pglist_data *pgdat;
     struct lruvec *lruvec;
-    struct scan_control sc = {0};
-    int scanned;
+    LIST_HEAD(migrate_list);
+    struct folio *folio, *next;
+    unsigned long collected = 0;
+    int migrated = 0;
+    unsigned long flags;
+
+    /* target node: CXL node — change if necessary */
+    int target_nid = DEMOTE_TARGET_NID;
 
     if (nid < 0 || nid >= MAX_NUMNODES)
         nid = 0;
@@ -7805,15 +7940,54 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     if (!lruvec)
         return;
 
-    /* scan_control 세팅 */
-    sc.nr_to_reclaim = nr_pages;  // <- 기존 nr_to_scan 대신
+    printk(KERN_INFO "[DEMOTE] Requesting migration of %lu pages for nice=%d from nid=%d -> target_nid=%d\n",
+           nr_pages, nice_val, nid, target_nid);
 
-    printk(KERN_INFO "[DEMOTE] do_mmap: Demote request %lu pages for nice %d process on nid %d\n",
-           nr_pages, nice_val, nid);
+    /* Collect candidate folios from oldest gen.
+     * We hold the lru lock only while manipulating LRU lists to minimize contention.
+     */
+    spin_lock_irqsave(&lruvec->lru_lock, flags);
+    collected = force_demote_lowest_gen_scan(lruvec, nr_pages, &migrate_list);
+    spin_unlock_irqrestore(&lruvec->lru_lock, flags);
 
-    scanned = evict_folios(lruvec, &sc, 0 /* swappiness */);
+    if (!collected) {
+        printk(KERN_INFO "[DEMOTE] No candidate folios isolated (collected=0)\n");
+        return;
+    }
 
-    printk(KERN_INFO "[DEMOTE] do_mmap: Demotion done, scanned=%d pages\n", scanned);
+    printk(KERN_INFO "[DEMOTE] isolated ~%lu pages; calling migrate_pages to nid=%d\n",
+           collected, target_nid);
+
+    /*
+     * Call migrate_pages (API may vary by kernel). In many 6.1/6.15 trees,
+     * a simple migrate_pages(list, target_nid, flags) is available.
+     *
+     * If your tree uses a different signature, replace this call accordingly.
+     */
+    migrated = migrate_pages(&migrate_list, target_nid, MIGRATE_SYNC);
+
+    /* migrate_pages returns number of pages migrated (or negative on error) */
+    if (migrated < 0) {
+        printk(KERN_ERR "[DEMOTE] migrate_pages returned error %d\n", migrated);
+        migrated = 0;
+    }
+
+    printk(KERN_INFO "[DEMOTE] migrate_pages migrated %d pages (collected %lu)\n",
+           migrated, collected);
+
+    /* Any folios left on migrate_list failed to migrate — put them back to LRU. */
+    if (!list_empty(&migrate_list)) {
+        spin_lock_irqsave(&lruvec->lru_lock, flags);
+        list_for_each_entry_safe(folio, next, &migrate_list, lru) {
+            list_del_init(&folio->lru);
+            /* Return to LRU — use putback helper to be safe */
+            folio_putback_lru(folio);
+        }
+        spin_unlock_irqrestore(&lruvec->lru_lock, flags);
+    }
+
+    printk(KERN_INFO "[DEMOTE] force_demote_pages done: requested=%lu collected=%lu migrated=%d\n",
+           nr_pages, collected, migrated);
 }
 
 
