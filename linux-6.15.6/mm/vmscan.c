@@ -7858,23 +7858,14 @@ static int force_demote_lowest_gen_scan(struct lruvec *lruvec,
 }
 
 /* force_demote_pages 함수 */
+
 void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
 {
     struct pglist_data *pgdat;
     struct lruvec *lruvec;
     LIST_HEAD(migrate_list);
     struct folio *folio, *next;
-    unsigned long collected = 0;
-    unsigned long flags;
-    unsigned int nr_migrated = 0;
-
-    struct migration_target_control mtc = {
-        .nid = DEMOTE_TARGET_NID,
-        .gfp_mask = GFP_HIGHUSER_MOVABLE,
-        .nmask = NULL,
-        .reason = MR_NUMA_MISPLACED,
-    };
-
+    unsigned long moved_pages = 0; 
     if (nid < 0 || nid >= MAX_NUMNODES)
         nid = 0;
 
@@ -7899,50 +7890,39 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     if (!lruvec)
         return;
 
-    printk(KERN_INFO "[DEMOTE] Requesting migration of %lu pages for nice=%d from nid=%d -> target_nid=%d\n",
-           nr_pages, nice_val, nid, DEMOTE_TARGET_NID);
+    printk(KERN_INFO "[DEMOTE] Requesting migration of %lu pages for nice %d on nid %d\n",
+           nr_pages, nice_val, nid);
 
-    /* LRU 락을 잡고 folio 수집 */
-    spin_lock_irqsave(&lruvec->lru_lock, flags);
-    collected = force_demote_lowest_gen_scan(lruvec, nr_pages, &migrate_list);
-    spin_unlock_irqrestore(&lruvec->lru_lock, flags);
+    /* MGLRU 가장 아랫 세대 folio 수집 */
+    spin_lock_irq(&lruvec->lru_lock);
+    force_demote_lowest_gen_scan(lruvec, nr_pages, &migrate_list);
+    spin_unlock_irq(&lruvec->lru_lock);
 
-    if (!collected) {
-        printk(KERN_INFO "[DEMOTE] No candidate folios isolated (collected=0)\n");
+    if (list_empty(&migrate_list)) {
+        printk(KERN_INFO "[DEMOTE] No candidate folios found for migration\n");
         return;
     }
 
-    /* migrate_pages 호출 */
-    nr_migrated = migrate_pages(
-        &migrate_list,
-        alloc_migrate_folio,
-        NULL,
-        (unsigned long)&mtc,
-        MIGRATE_SYNC,
-        mtc.reason,
-        &nr_migrated
-    );
+    /* 리스트에서 하나씩 folio를 꺼내 AutoNUMA 루틴으로 CXL 이동 */
+    list_for_each_entry_safe(folio, next, &migrate_list, lru) {
+        if (moved_pages >= nr_pages)
+            break;
 
-    if (nr_migrated < 0) {
-        printk(KERN_ERR "[DEMOTE] migrate_pages returned error %d\n", nr_migrated);
-        nr_migrated = 0;
-    }
-
-    printk(KERN_INFO "[DEMOTE] migrate_pages migrated %u pages (collected %lu)\n",
-           nr_migrated, collected);
-
-    /* Migration 실패 folio 원위치 복귀 */
-    if (!list_empty(&migrate_list)) {
-        spin_lock_irqsave(&lruvec->lru_lock, flags);
-        list_for_each_entry_safe(folio, next, &migrate_list, lru) {
-            list_del_init(&folio->lru);
-            folio_putback_lru(folio);
+        /* folio 이동 준비: PTL을 이미 갖고 있다고 가정 */
+        if (migrate_misplaced_folio_prepare(folio, current->mm->mmap, DEMOTE_TARGET_NID) == 0) {
+            /* AutoNUMA 단일 folio 이동 */
+            if (migrate_misplaced_folio(folio, DEMOTE_TARGET_NID) == 0) {
+                moved_pages += folio_nr_pages(folio);
+                list_del_init(&folio->lru);
+            } else {
+                /* 실패하면 skip, 원래 위치 그대로 유지 */
+                continue;
+            }
         }
-        spin_unlock_irqrestore(&lruvec->lru_lock, flags);
     }
 
-    printk(KERN_INFO "[DEMOTE] force_demote_pages done: requested=%lu collected=%lu migrated=%u\n",
-           nr_pages, collected, nr_migrated);
+    printk(KERN_INFO "[DEMOTE] Migration done: %lu pages moved to CXL node %d\n",
+           moved_pages, DEMOTE_TARGET_NID);
 }
 
 

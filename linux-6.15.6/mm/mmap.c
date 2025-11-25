@@ -574,6 +574,12 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	    ((vm_flags & VM_LOCKED) ||
 	     (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE))
 		*populate = len;
+
+
+	if (demote_enabled) {
+        demote_enabled = false;  // 페이지 할당 완료 후 demote 끔
+        printk(KERN_INFO "[DEMOTE] demote_enabled turned off after successful mmap\n");
+    }
 	return addr;
 }
 
