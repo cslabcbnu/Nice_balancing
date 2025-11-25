@@ -7861,9 +7861,8 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     struct lruvec *lruvec;
     LIST_HEAD(migrate_list);
     struct folio *folio, *next;
-    unsigned long moved_pages = 0; 
-    unsigned long attempted_folios = 0;
-    unsigned long success_folios = 0;
+    unsigned long collected_pages = 0; 
+    unsigned long collected_folios = 0;
 
     if (nid < 0 || nid >= MAX_NUMNODES)
         nid = 0;
@@ -7889,32 +7888,38 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     if (!lruvec)
         return;
 
-    printk(KERN_INFO "[DEMOTE] Requesting migration of %lu pages for nice %d on nid %d\n",
+    printk(KERN_INFO "[DEMOTE] Requesting scan of %lu pages for nice %d on nid %d\n",
            nr_pages, nice_val, nid);
 
+    /* MGLRU 가장 아랫 세대 folio 수집 */
     spin_lock_irq(&lruvec->lru_lock);
-    force_demote_lowest_gen_scan(lruvec, nr_pages, &migrate_list);
+    collected_pages = force_demote_lowest_gen_scan(lruvec, nr_pages, &migrate_list);
     spin_unlock_irq(&lruvec->lru_lock);
 
-    if (list_empty(&migrate_list)) {
-        printk(KERN_INFO "[DEMOTE] No candidate folios found for migration\n");
-        return;
+    /* 수집된 폴리오 수 확인 */
+    list_for_each_entry_safe(folio, next, &migrate_list, lru) {
+        collected_folios++;
+        // printk(KERN_INFO "[DEMOTE] Collected folio at nid=%d, pages=%d\n",
+        //        folio_nid(folio), folio_nr_pages(folio));
     }
 
-    /* 리스트에서 하나씩 folio를 꺼내 CXL로 이동 */
-    list_for_each_entry_safe(folio, next, &migrate_list, lru) {
-        attempted_folios++;
+    printk(KERN_INFO "[DEMOTE] Scan done: %lu folios collected, total %lu pages\n",
+           collected_folios, collected_pages);
 
+    // 마이그레이션 관련 부분은 주석 처리
+    /*
+    list_for_each_entry_safe(folio, next, &migrate_list, lru) {
         if (moved_pages >= nr_pages)
             break;
 
-        if (!migrate_misplaced_folio(folio, DEMOTE_TARGET_NID)) {
-            moved_pages += folio_nr_pages(folio);
-            list_del_init(&folio->lru);
-            success_folios++;
+        if (migrate_misplaced_folio_prepare(folio, current->mm->mmap, DEMOTE_TARGET_NID) == 0) {
+            if (migrate_misplaced_folio(folio, DEMOTE_TARGET_NID) == 0) {
+                moved_pages += folio_nr_pages(folio);
+                list_del_init(&folio->lru);
+            }
         }
     }
+    */
 
-    printk(KERN_INFO "[DEMOTE] Migration done: requested=%lu pages, attempted=%lu folios, success=%lu folios, moved_pages=%lu to CXL node %d\n",
-           nr_pages, attempted_folios, success_folios, moved_pages, DEMOTE_TARGET_NID);
+    printk(KERN_INFO "[DEMOTE] force_demote_pages finished\n");
 }
