@@ -7773,6 +7773,8 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
 	}
 }
 
+EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
+
 /* 타깃 CXL 노드 */
 #ifndef DEMOTE_TARGET_NID
 #define DEMOTE_TARGET_NID 1
@@ -7783,7 +7785,7 @@ static inline void __move_folio_to_moved(struct folio *folio, struct list_head *
     list_move_tail(&folio->lru, moved);
 }
 
-/* MGLRU 가장 아랫 세대 folio 수집 */
+/* Oldest generation folio를 수집 */
 static int force_demote_lowest_gen_scan(struct lruvec *lruvec,
                                         unsigned long nr_to_scan,
                                         struct list_head *list)
@@ -7810,11 +7812,23 @@ static int force_demote_lowest_gen_scan(struct lruvec *lruvec,
                 struct folio *folio = lru_to_folio(head);
                 int delta = folio_nr_pages(folio);
 
-                if (folio_test_unevictable(folio) || folio_maybe_dma_pinned(folio) ||
-                    !folio_trylock(folio)) {
+                if (folio_test_unevictable(folio) || folio_maybe_dma_pinned(folio)) {
                     __move_folio_to_moved(folio, &moved);
                     continue;
                 }
+
+                if (!folio_trylock(folio)) {
+                    __move_folio_to_moved(folio, &moved);
+                    continue;
+                }
+
+#if defined(folio_evictable)
+                if (!folio_evictable(folio)) {
+                    folio_unlock(folio);
+                    __move_folio_to_moved(folio, &moved);
+                    continue;
+                }
+#endif
 
                 list_del_init(&folio->lru);
                 list_add_tail(&folio->lru, list);
@@ -7840,7 +7854,7 @@ static int force_demote_lowest_gen_scan(struct lruvec *lruvec,
     return isolated_pages;
 }
 
-/* force_demote_pages: do_mmap에서 요청한 nr_pages만큼 CXL로 강제 마이그레이션 */
+/* force_demote_pages: vma 없이 안전하게 migrate */
 void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
 {
     struct pglist_data *pgdat;
@@ -7848,6 +7862,8 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     LIST_HEAD(migrate_list);
     struct folio *folio, *next;
     unsigned long moved_pages = 0; 
+    unsigned long attempted_folios = 0;
+    unsigned long success_folios = 0;
 
     if (nid < 0 || nid >= MAX_NUMNODES)
         nid = 0;
@@ -7876,7 +7892,6 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     printk(KERN_INFO "[DEMOTE] Requesting migration of %lu pages for nice %d on nid %d\n",
            nr_pages, nice_val, nid);
 
-    /* MGLRU 가장 아랫 세대 folio 수집 */
     spin_lock_irq(&lruvec->lru_lock);
     force_demote_lowest_gen_scan(lruvec, nr_pages, &migrate_list);
     spin_unlock_irq(&lruvec->lru_lock);
@@ -7886,22 +7901,20 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
         return;
     }
 
-    /* 리스트에서 folio를 꺼내 CXL로 이동 */
+    /* 리스트에서 하나씩 folio를 꺼내 CXL로 이동 */
     list_for_each_entry_safe(folio, next, &migrate_list, lru) {
+        attempted_folios++;
+
         if (moved_pages >= nr_pages)
             break;
 
-        /* folio 이동 준비: vma 없이, target NID 지정 */
-        if (migrate_misplaced_folio_prepare(folio, NULL, DEMOTE_TARGET_NID) == 0) {
-            if (migrate_misplaced_folio(folio, DEMOTE_TARGET_NID) == 0) {
-                moved_pages += folio_nr_pages(folio);
-                list_del_init(&folio->lru);
-            }
+        if (!migrate_misplaced_folio(folio, DEMOTE_TARGET_NID)) {
+            moved_pages += folio_nr_pages(folio);
+            list_del_init(&folio->lru);
+            success_folios++;
         }
     }
 
-    printk(KERN_INFO "[DEMOTE] Migration done: %lu pages moved to CXL node %d\n",
-           moved_pages, DEMOTE_TARGET_NID);
+    printk(KERN_INFO "[DEMOTE] Migration done: requested=%lu pages, attempted=%lu folios, success=%lu folios, moved_pages=%lu to CXL node %d\n",
+           nr_pages, attempted_folios, success_folios, moved_pages, DEMOTE_TARGET_NID);
 }
-
-EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
