@@ -7912,7 +7912,7 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
         return;
     }
 
-    /* migrate_pages 호출 (6.15.6 시그니처) */
+    /* migrate_pages 호출 */
     nr_migrated = migrate_pages(
         &migrate_list,
         alloc_migrate_folio,
