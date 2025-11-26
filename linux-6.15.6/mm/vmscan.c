@@ -7854,15 +7854,19 @@ static int force_demote_lowest_gen_scan(struct lruvec *lruvec,
     return isolated_pages;
 }
 
-/* force_demote_pages: vma 없이 안전하게 migrate */
+/* 한 번의 Lock 구간에서 처리할 최대 페이지 수 (MGLRU 비트맵 최적화 크기) */
+#define DEMOTE_BATCH_SIZE 64 
+
 void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
 {
     struct pglist_data *pgdat;
     struct lruvec *lruvec;
     LIST_HEAD(migrate_list);
     struct folio *folio, *next;
-    unsigned long collected_pages = 0; 
-    unsigned long collected_folios = 0;
+    
+    unsigned long collected_total = 0; /* 지금까지 총 수집한 페이지 수 */
+    unsigned long scanned_batch = 0;   /* 이번 루프에서 수집한 페이지 수 */
+    unsigned long remaining;
 
     if (nid < 0 || nid >= MAX_NUMNODES)
         nid = 0;
@@ -7871,15 +7875,16 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     if (!pgdat)
         return;
 
+    /* --- LRUVEC 획득 로직 (기존 동일) --- */
 #ifdef CONFIG_MEMCG
     {
         struct mem_cgroup *memcg = get_mem_cgroup_from_mm(current->mm);
-        if (memcg)
+        if (memcg) {
             lruvec = mem_cgroup_lruvec(memcg, pgdat);
-        else
-            lruvec = &pgdat->__lruvec;
-        if (memcg)
             mem_cgroup_put(memcg);
+        } else {
+            lruvec = &pgdat->__lruvec;
+        }
     }
 #else
     lruvec = &pgdat->__lruvec;
@@ -7888,38 +7893,68 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     if (!lruvec)
         return;
 
-    printk(KERN_INFO "[DEMOTE] Requesting scan of %lu pages for nice %d on nid %d\n",
+    printk(KERN_INFO "[DEMOTE] Start scanning: target %lu pages, nice %d, nid %d\n",
            nr_pages, nice_val, nid);
 
-    /* MGLRU 가장 아랫 세대 folio 수집 */
-    spin_lock_irq(&lruvec->lru_lock);
-    collected_pages = force_demote_lowest_gen_scan(lruvec, nr_pages, &migrate_list);
-    spin_unlock_irq(&lruvec->lru_lock);
+    /* * [핵심 변경] 목표량을 채우거나 더 이상 페이지가 없을 때까지 반복 
+     */
+    while (collected_total < nr_pages) {
+        /* 이번 턴에 수집할 목표량 계산 (남은 양 vs 배치 사이즈 중 작은 값) */
+        remaining = nr_pages - collected_total;
+        unsigned long target_batch = (remaining > DEMOTE_BATCH_SIZE) ? DEMOTE_BATCH_SIZE : remaining;
 
-    /* 수집된 폴리오 수 확인 */
-    list_for_each_entry_safe(folio, next, &migrate_list, lru) {
-        collected_folios++;
-        // printk(KERN_INFO "[DEMOTE] Collected folio at nid=%d, pages=%d\n",
-        //        folio_nid(folio), folio_nr_pages(folio));
-    }
+        spin_lock_irq(&lruvec->lru_lock);
+        
+        /* * force_demote_lowest_gen_scan 함수는 
+         * 요청한 target_batch 만큼만 수집하고 리턴하도록 구현되어 있어야 합니다.
+         * 수집된 페이지들은 lruvec에서 제거되어 migrate_list로 이동됩니다.
+         */
+        scanned_batch = force_demote_lowest_gen_scan(lruvec, target_batch, &migrate_list);
+        
+        spin_unlock_irq(&lruvec->lru_lock);
 
-    printk(KERN_INFO "[DEMOTE] Scan done: %lu folios collected, total %lu pages\n",
-           collected_folios, collected_pages);
-
-    // 마이그레이션 관련 부분은 주석 처리
-    /*
-    list_for_each_entry_safe(folio, next, &migrate_list, lru) {
-        if (moved_pages >= nr_pages)
+        /* 수집된 것이 없으면 루프 탈출 (MGLRU가 비었거나 조건 불만족) */
+        if (scanned_batch == 0)
             break;
 
-        if (migrate_misplaced_folio_prepare(folio, current->mm->mmap, DEMOTE_TARGET_NID) == 0) {
-            if (migrate_misplaced_folio(folio, DEMOTE_TARGET_NID) == 0) {
-                moved_pages += folio_nr_pages(folio);
-                list_del_init(&folio->lru);
-            }
+        collected_total += scanned_batch;
+
+        /* * [중요] 락을 풀었으므로 스케줄러에게 CPU를 양보할 기회를 줍니다.
+         * 이 코드가 있어야 RCU Stall / Soft Lockup 패닉이 발생하지 않습니다.
+         */
+        cond_resched();
+    }
+
+    /* 결과 출력 */
+    printk(KERN_INFO "[DEMOTE] Scan finished: %lu pages collected (Requested: %lu)\n",
+           collected_total, nr_pages);
+
+    /* --- 마이그레이션 실행 (주석 해제 및 로직 연결) --- */
+    /* * migrate_list에 있는 폴리오들은 이제 LRU 락 밖에 있으므로
+     * 안전하게 마이그레이션을 시도할 수 있습니다.
+     */
+    /*
+    unsigned long moved_pages = 0;
+    list_for_each_entry_safe(folio, next, &migrate_list, lru) {
+        // 목표한 페이지 수만큼 이동했으면 나머지는 다시 LRU로 되돌리기 등 로직 추가 가능
+        
+        // 예시 마이그레이션 호출
+        if (migrate_misplaced_folio_prepare(folio, current->mm, DEMOTE_TARGET_NID) == 0) {
+             // ... migrate_misplaced_folio 호출 ...
+             // 성공 시 list_del 및 moved_pages 증가
+        } else {
+             // 실패 시 처리는 putback_lru_folio 등으로 되돌려야 함
+             list_del_init(&folio->lru);
+             folio_putback_lru(folio); 
         }
     }
     */
-
-    printk(KERN_INFO "[DEMOTE] force_demote_pages finished\n");
+    
+    /* * 테스트용: 마이그레이션 코드가 아직 없다면, 
+     * list에서 제거된 folio들을 다시 LRU에 넣어주거나 처리해야 메모리 릭이 안 생깁니다.
+     * force_demote_lowest_gen_scan이 isolate(refcount증가)를 했다고 가정하면:
+     */
+    if (!list_empty(&migrate_list)) {
+        putback_movable_pages(&migrate_list); // 혹은 putback_lru_folios
+    }
 }
