@@ -7933,7 +7933,7 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     /* * migrate_list에 있는 폴리오들은 이제 LRU 락 밖에 있으므로
      * 안전하게 마이그레이션을 시도할 수 있습니다.
      */
-    /*
+    
     unsigned long moved_pages = 0;
     list_for_each_entry_safe(folio, next, &migrate_list, lru) {
         // 목표한 페이지 수만큼 이동했으면 나머지는 다시 LRU로 되돌리기 등 로직 추가 가능
@@ -7948,13 +7948,5 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
              folio_putback_lru(folio); 
         }
     }
-    */
     
-    /* * 테스트용: 마이그레이션 코드가 아직 없다면, 
-     * list에서 제거된 folio들을 다시 LRU에 넣어주거나 처리해야 메모리 릭이 안 생깁니다.
-     * force_demote_lowest_gen_scan이 isolate(refcount증가)를 했다고 가정하면:
-     */
-    if (!list_empty(&migrate_list)) {
-        putback_movable_pages(&migrate_list); // 혹은 putback_lru_folios
-    }
 }
