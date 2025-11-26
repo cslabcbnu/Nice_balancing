@@ -7776,78 +7776,86 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
 EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 
 /* 타깃 CXL 노드 */
-#ifndef DEMOTE_TARGET_NID
 #define DEMOTE_TARGET_NID 1
-#endif
 
 static inline void __move_folio_to_moved(struct folio *folio, struct list_head *moved)
 {
     list_move_tail(&folio->lru, moved);
 }
 
-/* Oldest generation folio를 수집 */
+/*
+ * Oldest generation folio를 수집
+ * - folio_isolate_lru()를 사용하여 페이지를 안전하게 고립시키고 refcount를 증가시킴.
+ * - LRU Lock (lruvec->lru_lock)이 외부 호출자(force_demote_pages)에 의해 잡혀있어야 함.
+ */
 static int force_demote_lowest_gen_scan(struct lruvec *lruvec,
-                                        unsigned long nr_to_scan,
-                                        struct list_head *list)
+                                         unsigned long nr_to_scan,
+                                         struct list_head *list)
 {
     int i, gen, type;
     int isolated_pages = 0;
     long remaining = nr_to_scan;
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
 
-    VM_WARN_ON_ONCE(!list_empty(list));
+    // 외부에서 리스트가 비어 있음을 보장해야 합니다.
+    VM_WARN_ON_ONCE(!list_empty(list)); 
 
-    for (type = 0; type < 2; type++) { // 0: anon, 1: file
+    for (type = 0; type < 2; type++) { // 0: Anon, 1: File
         if (get_nr_gens(lruvec, type) <= MIN_NR_GENS)
             continue;
 
-        gen = lru_gen_from_seq(lrugen->min_seq[type]);
+        // 가장 낮은 세대(Oldest generation)부터 스캔 시작
+        gen = lru_gen_from_seq(lrugen->min_seq[type]); 
 
         for (i = MAX_NR_ZONES; i > 0; i--) {
             int zone = (i - 1) % MAX_NR_ZONES;
             struct list_head *head = &lrugen->folios[gen][type][zone];
-            LIST_HEAD(moved);
+            LIST_HEAD(moved); // 고립 실패한 페이지 임시 리스트
 
+            // 현재 Zone의 리스트가 빌 때까지 또는 목표치를 채울 때까지 반복
             while (!list_empty(head)) {
                 struct folio *folio = lru_to_folio(head);
                 int delta = folio_nr_pages(folio);
 
+                // 1. Demote 불가 조건 확인 (DMA Pin 등)
                 if (folio_test_unevictable(folio) || folio_maybe_dma_pinned(folio)) {
                     __move_folio_to_moved(folio, &moved);
                     continue;
                 }
 
-                if (!folio_trylock(folio)) {
+                // 2. [안전한 고립 시도]
+                // - folio_isolate_lru()가 성공하면 folio는 head에서 제거되고,
+                //   참조 카운트(refcount)가 증가됩니다.
+                // - Bad page state 버그 방지를 위한 필수 단계입니다.
+                if (folio_isolate_lru(folio)) {
+                    
+                    // 3. 고립 성공: migrate_list에 추가
+                    list_add_tail(&folio->lru, list);
+                    isolated_pages += delta;
+                } else {
+                    // 고립 실패: (예: 페이지 락 경합, Dirty/Writeback 상태 등)
+                    // moved 리스트로 옮겨 잠시 후 다시 시도될 수 있도록 합니다.
                     __move_folio_to_moved(folio, &moved);
-                    continue;
                 }
 
-#if defined(folio_evictable)
-                if (!folio_evictable(folio)) {
-                    folio_unlock(folio);
-                    __move_folio_to_moved(folio, &moved);
-                    continue;
-                }
-#endif
-
-                list_del_init(&folio->lru);
-                list_add_tail(&folio->lru, list);
-                isolated_pages += delta;
-
-                folio_unlock(folio);
-
-                if (!--remaining || isolated_pages >= MIN_LRU_BATCH)
+                // 4. 배치 제한 확인 및 루프 종료 조건
+                if (isolated_pages >= nr_to_scan) 
+                    break;
+                
+                remaining -= delta;
+                if (remaining <= 0)
                     break;
             }
 
+            // 고립에 실패한 페이지들을 원래 리스트의 꼬리에 다시 붙여 다음 스캔 때 시도
             if (!list_empty(&moved))
                 list_splice_tail(&moved, head);
 
-            if (!remaining || isolated_pages >= MIN_LRU_BATCH)
+            if (isolated_pages >= nr_to_scan || remaining <= 0)
                 break;
         }
 
-        if (!remaining || isolated_pages >= MIN_LRU_BATCH)
+        if (isolated_pages >= nr_to_scan || remaining <= 0)
             break;
     }
 
@@ -7929,24 +7937,52 @@ void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
     printk(KERN_INFO "[DEMOTE] Scan finished: %lu pages collected (Requested: %lu)\n",
            collected_total, nr_pages);
 
-    /* --- 마이그레이션 실행 (주석 해제 및 로직 연결) --- */
-    /* * migrate_list에 있는 폴리오들은 이제 LRU 락 밖에 있으므로
-     * 안전하게 마이그레이션을 시도할 수 있습니다.
-     */
-    
+    /* --- 마이그레이션 실행 및 정리 --- */
     unsigned long moved_pages = 0;
+    
+    // 컴파일 에러 해결을 위해 VMA를 NULL로 설정합니다.
+    struct vm_area_struct *vma = NULL; 
+    
     list_for_each_entry_safe(folio, next, &migrate_list, lru) {
-        // 목표한 페이지 수만큼 이동했으면 나머지는 다시 LRU로 되돌리기 등 로직 추가 가능
+        // 목표한 페이지 수를 초과했다면 더 이상 이동하지 않고 putback합니다.
+        if (moved_pages >= nr_pages)
+            break;
         
-        // 예시 마이그레이션 호출
-        if (migrate_misplaced_folio_prepare(folio, current->mm, DEMOTE_TARGET_NID) == 0) {
-             // ... migrate_misplaced_folio 호출 ...
-             // 성공 시 list_del 및 moved_pages 증가
+			// migrate_misplaced_folio_prepare가 vma->vm_flags를 접근할 때 NULL 패닉 방지
+        if (folio_is_file_lru(folio)) {
+            // prepare에서 VMA가 필요하므로 실패로 간주하고 putback 합니다.
+            list_del_init(&folio->lru);
+            folio_putback_lru(folio); 
+            continue; // 다음 폴리오로 이동
+        }
+        /* 1. 마이그레이션 준비: 언매핑 및 락 획득 시도 */
+        if (migrate_misplaced_folio_prepare(folio, vma, DEMOTE_TARGET_NID) == 0) {
+            
+            /* 2. 실제 마이그레이션 실행 */
+            if (migrate_misplaced_folio(folio, DEMOTE_TARGET_NID) == 0) {
+                 // 마이그레이션 성공
+                 moved_pages += folio_nr_pages(folio);
+                 list_del_init(&folio->lru);
+                 // migrate_misplaced_folio()가 내부적으로 refcount를 정리(put)했거나,
+                 // 성공적으로 PTE를 업데이트하고 페이지를 해제했어야 합니다.
+            } else {
+                 // 마이그레이션 실패 (e.g., CXL 공간 부족)
+                 list_del_init(&folio->lru);
+                 folio_putback_lru(folio); 
+            }
         } else {
-             // 실패 시 처리는 putback_lru_folio 등으로 되돌려야 함
-             list_del_init(&folio->lru);
-             folio_putback_lru(folio); 
+            // prepare 실패 (e.g., 페이지 락, 더티 페이지, 언매핑 불가)
+            list_del_init(&folio->lru);
+            folio_putback_lru(folio);
         }
     }
+
+    // 목표치를 채워서 루프를 break하고 남은 페이지들 정리
+    list_for_each_entry_safe(folio, next, &migrate_list, lru) {
+        list_del_init(&folio->lru);
+        folio_putback_lru(folio); 
+    }
     
+    printk(KERN_INFO "[DEMOTE] Pages successfully moved: %lu\n", moved_pages);
+    printk(KERN_INFO "[DEMOTE] force_demote_pages finished\n");
 }
