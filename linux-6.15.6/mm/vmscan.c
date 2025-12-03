@@ -7806,7 +7806,7 @@ static int demote_worker_fn(void *arg)
 {
     int nid = *(int *)arg;
     struct demote_node *dn = &demote_nodes[nid];
-	int demoted;
+	long demoted;
 
     allow_signal(SIGKILL); /* 커널 스레드 종료 가능하게 */
 
