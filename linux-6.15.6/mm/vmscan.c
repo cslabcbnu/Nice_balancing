@@ -7786,7 +7786,7 @@ unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
         .priority = DEF_PRIORITY,
         .may_unmap = 1,           // 필요하면 unmap
         .may_writepage = !laptop_mode,       // writepage 금지
-        .may_swap = !!(reclaim_options & MEMCG_RECLAIM_MAY_SWAP),            // swap 금지
+        .may_swap = 1,
         .proactive = 0,
         .target_mem_cgroup = NULL, // memcg 대상 없음
     };
@@ -7795,33 +7795,12 @@ unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 
     set_task_reclaim_state(current, &sc.reclaim_state);
 
-    /* 기존 do_try_to_free_pages를 DEMOTE 루틴용으로 호출 */
-    demoted = do_try_to_demote_pages(zonelist, &sc);
+    demoted = do_try_to_free_pages(zonelist, &sc);
 
     set_task_reclaim_state(current, NULL);
 
     return demoted;
 }
-
-static int __init knicedemoted_init(void)
-{
-    int nid;
-
-    for (nid = 0; nid < MAX_NUMNODES; nid++) {
-        atomic_set(&demote_nodes[nid].in_progress, 0);
-        atomic_long_set(&demote_nodes[nid].target_pages, 0);
-        atomic_long_set(&demote_nodes[nid].demoted_pages, 0);
-        init_waitqueue_head(&demote_nodes[nid].wq);
-        spin_lock_init(&demote_nodes[nid].lock);
-
-        if (!kthread_run(demote_worker_fn, (void *)(unsigned long)nid, "knicedemoted/%d", nid))
-            pr_err("knicedemoted: failed to start worker for node %d\n", nid);
-    }
-
-    pr_info("knicedemoted: all workers initialized\n");
-    return 0;
-}
-late_initcall(knicedemoted_init);
 
 static int demote_worker_fn(void *arg)
 {
@@ -7860,3 +7839,23 @@ static int demote_worker_fn(void *arg)
 
     return 0;
 }
+
+static int __init knicedemoted_init(void)
+{
+    int nid;
+
+    for (nid = 0; nid < MAX_NUMNODES; nid++) {
+        atomic_set(&demote_nodes[nid].in_progress, 0);
+        atomic_long_set(&demote_nodes[nid].target_pages, 0);
+        atomic_long_set(&demote_nodes[nid].demoted_pages, 0);
+        init_waitqueue_head(&demote_nodes[nid].wq);
+        spin_lock_init(&demote_nodes[nid].lock);
+
+        if (!kthread_run(demote_worker_fn, (void *)(unsigned long)nid, "knicedemoted/%d", nid))
+            pr_err("knicedemoted: failed to start worker for node %d\n", nid);
+    }
+
+    pr_info("knicedemoted: all workers initialized\n");
+    return 0;
+}
+late_initcall(knicedemoted_init);
