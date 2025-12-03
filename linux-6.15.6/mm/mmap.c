@@ -31,6 +31,8 @@
 #include <linux/export.h>
 #include <linux/mount.h>
 #include <linux/mempolicy.h>
+//hayong
+#include <linux/memory-tiers.h>
 #include <linux/rmap.h>
 #include <linux/mmu_notifier.h>
 #include <linux/mmdebug.h>

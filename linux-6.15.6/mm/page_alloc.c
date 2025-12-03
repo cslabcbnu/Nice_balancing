@@ -4453,10 +4453,6 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 		WARN_ON_ONCE(current->flags & PF_MEMALLOC);
 	}
 
-	if (current->mm)
-		printk("[CXL-TRACE] PID:%d (%s) NICE:%d requests order:%u pages (~%lu KB)\n", current->pid, current->comm, task_nice(current), order, (PAGE_SIZE << order) / 1024);
-	
-
 
 restart:
 	compaction_retries = 0;

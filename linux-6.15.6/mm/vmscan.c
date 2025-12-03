@@ -7776,6 +7776,7 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
 EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 
 struct demote_node demote_nodes[2];
+bool knicedemoted_enabled = false;
 
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 {
@@ -7810,6 +7811,7 @@ static int demote_worker_fn(void *arg)
     int nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[nid];
     long demoted;
+	knicedemoted_enabled = true;
 
     allow_signal(SIGKILL);
 
