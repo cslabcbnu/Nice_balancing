@@ -71,6 +71,29 @@ static inline bool node_is_toptier(int node)
 {
 	return true;
 }
+
+/* hayong knicedemoted 
+
+implement in vmscan.c 
+trigger in mmap.c */
+
+struct demote_node {
+    atomic_long_t target_pages;
+    atomic_long_t demoted_pages;
+    atomic_t in_progress;
+    pid_t owner_pid;
+    unsigned long deadline_jiffies;
+    wait_queue_head_t wq;
+    spinlock_t lock;
+};
+
+extern struct demote_node demote_nodes[2];
+extern bool knicedemoted_enabled;
+
+long kernel_set_task_preferred_node(struct task_struct *task, int nid); // implement in mm/mempolicy.c
+
+// hayong knicedemoted 
+
 #endif
 
 #else
@@ -152,26 +175,5 @@ static inline void mt_put_memory_types(struct list_head *memory_types)
 {
 }
 
-/* hayong knicedemoted 
-
-implement in vmscan.c 
-trigger in mmap.c */
-
-struct demote_node {
-    atomic_long_t target_pages;
-    atomic_long_t demoted_pages;
-    atomic_t in_progress;
-    pid_t owner_pid;
-    unsigned long deadline_jiffies;
-    wait_queue_head_t wq;
-    spinlock_t lock;
-};
-
-extern struct demote_node demote_nodes[2];
-extern bool knicedemoted_enabled;
-
-long kernel_set_task_preferred_node(struct task_struct *task, int nid); // implement in mm/mempolicy.c
-
-// hayong knicedemoted 
 #endif	/* CONFIG_NUMA */
 #endif  /* _LINUX_MEMORY_TIERS_H */
