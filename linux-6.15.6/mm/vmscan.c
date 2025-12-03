@@ -7775,7 +7775,7 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
 
 EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 
-unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
+static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 {
     unsigned long demoted = 0;
     struct scan_control sc = {
