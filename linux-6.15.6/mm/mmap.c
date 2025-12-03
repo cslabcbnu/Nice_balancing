@@ -349,6 +349,9 @@ static void set_preferred_node_for_current(int nid)
  * Returns: Either an error, or the address at which the requested mapping has
  * been performed.
  */
+
+#define CXL_NODE_ID 1  // CXL 노드 ID 지정, 필요시 변경
+#define DRAM_NODE_ID 0 // DRAM 노드 ID 지정, 필요시 변경
 unsigned long do_mmap(struct file *file, unsigned long addr,
 			unsigned long len, unsigned long prot,
 			unsigned long flags, vm_flags_t vm_flags,
@@ -369,8 +372,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	{
     	int nice_val = task_nice(current);
     	unsigned long nr_pages = len >> PAGE_SHIFT;
-    	int dram_nid = 0;  /* DRAM 노드 ID 지정, 필요시 변경 */
-    	struct demote_node *dn = &demote_nodes[dram_nid];
+    	struct demote_node *dn = &demote_nodes[DRAM_NODE_ID];
 
     	if (nice_val < 0) 
 		{
@@ -401,7 +403,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
         	if (atomic_read(&dn->in_progress)) 
 			{
             	/* allocator에서 preferred_nid를 CXL 노드로 지정 */
-            	set_preferred_node_for_current(1);
+            	set_preferred_node_for_current(CXL_NODE_ID);
             	printk(KERN_INFO "[NICE-BALANCING] do_mmap: nice >=0, forcing CXL allocation\n");
         	}
 		}

@@ -7775,6 +7775,8 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
 
 EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 
+struct demote_node demote_nodes[2];
+
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 {
     unsigned long demoted = 0;
@@ -7802,13 +7804,14 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
     return demoted;
 }
 
+/* 워커 함수 */
 static int demote_worker_fn(void *arg)
 {
-    int nid = *(int *)arg;
+    int nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[nid];
-	long demoted;
+    long demoted;
 
-    allow_signal(SIGKILL); /* 커널 스레드 종료 가능하게 */
+    allow_signal(SIGKILL);
 
     while (!kthread_should_stop()) {
         long target;
@@ -7823,12 +7826,12 @@ static int demote_worker_fn(void *arg)
         /* grab target_pages atomically */
         target = atomic_long_xchg(&dn->target_pages, 0);
         if (target <= 0) {
-            /* spurious wakeup */
             atomic_set(&dn->in_progress, 0);
             continue;
         }
 
-        printk(KERN_INFO "[DEMOTE-WORKER] Starting demote of %ld pages on nid %d\n", target, nid);
+        printk(KERN_INFO "[DEMOTE-WORKER] Starting demote of %ld pages on nid %d\n",
+               target, nid);
 
         /* 실제 demote 처리: 기존 MGLRU + MEMCG_RECLAIM_DEMOTE 루틴 재사용 */
         demoted = try_to_demote_pages(target, nid);
@@ -7840,6 +7843,7 @@ static int demote_worker_fn(void *arg)
     return 0;
 }
 
+/* 초기화 함수 */
 static int __init knicedemoted_init(void)
 {
     int nid;
@@ -7851,7 +7855,10 @@ static int __init knicedemoted_init(void)
         init_waitqueue_head(&demote_nodes[nid].wq);
         spin_lock_init(&demote_nodes[nid].lock);
 
-        if (!kthread_run(demote_worker_fn, (void *)(unsigned long)nid, "knicedemoted/%d", nid))
+        struct task_struct *task;
+        task = kthread_run(demote_worker_fn, (void *)(unsigned long)nid,
+                           "knicedemoted/%d", nid);
+        if (IS_ERR(task))
             pr_err("knicedemoted: failed to start worker for node %d\n", nid);
     }
 

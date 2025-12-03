@@ -468,7 +468,7 @@ struct demote_node {
     spinlock_t lock;
 };
 
-extern struct demote_node demote_nodes[MAX_NUMNODES];
+extern struct demote_node demote_nodes[2];
 
 long kernel_set_task_preferred_node(struct task_struct *task, int nid); // implement in mm/mempolicy.c
 
