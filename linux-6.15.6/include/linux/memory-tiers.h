@@ -56,21 +56,6 @@ void mt_put_memory_types(struct list_head *memory_types);
 int next_demotion_node(int node);
 void node_get_allowed_targets(pg_data_t *pgdat, nodemask_t *targets);
 bool node_is_toptier(int node);
-#else
-static inline int next_demotion_node(int node)
-{
-	return NUMA_NO_NODE;
-}
-
-static inline void node_get_allowed_targets(pg_data_t *pgdat, nodemask_t *targets)
-{
-	*targets = NODE_MASK_NONE;
-}
-
-static inline bool node_is_toptier(int node)
-{
-	return true;
-}
 
 /* hayong knicedemoted 
 
@@ -93,6 +78,22 @@ extern bool knicedemoted_enabled;
 long kernel_set_task_preferred_node(struct task_struct *task, int nid); // implement in mm/mempolicy.c
 
 // hayong knicedemoted 
+
+#else
+static inline int next_demotion_node(int node)
+{
+	return NUMA_NO_NODE;
+}
+
+static inline void node_get_allowed_targets(pg_data_t *pgdat, nodemask_t *targets)
+{
+	*targets = NODE_MASK_NONE;
+}
+
+static inline bool node_is_toptier(int node)
+{
+	return true;
+}
 
 #endif
 
