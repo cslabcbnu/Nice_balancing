@@ -7808,6 +7808,7 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 /* 워커 함수 */
 static int demote_worker_fn(void *arg)
 {
+	set_user_nice(current, -19);
     int nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[nid];
     long demoted;
