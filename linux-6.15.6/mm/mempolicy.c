@@ -914,6 +914,24 @@ out:
 	return ret;
 }
 
+
+//hayong 
+
+/* 외부에서 호출 가능한 wrapper */
+long kernel_set_task_preferred_node(struct task_struct *task, int nid)
+{
+    nodemask_t nodes;
+    long ret;
+
+    nodes_clear(nodes);
+    node_set(nid, nodes);
+
+    /* 내부 static 함수 do_set_mempolicy 호출 */
+    ret = do_set_mempolicy(MPOL_PREFERRED, 0, &nodes);
+    return ret;
+}
+
+
 /*
  * Return nodemask for policy for get_mempolicy() query
  *

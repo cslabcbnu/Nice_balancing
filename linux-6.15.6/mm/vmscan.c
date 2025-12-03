@@ -7775,214 +7775,88 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
 
 EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 
-/* 타깃 CXL 노드 */
-#define DEMOTE_TARGET_NID 1
-
-static inline void __move_folio_to_moved(struct folio *folio, struct list_head *moved)
+unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 {
-    list_move_tail(&folio->lru, moved);
+    unsigned long demoted = 0;
+    struct scan_control sc = {
+        .nr_to_reclaim = nr_pages,
+        .gfp_mask = (GFP_KERNEL & GFP_RECLAIM_MASK) |
+				(GFP_HIGHUSER_MOVABLE & ~GFP_RECLAIM_MASK),   // kernel allocation
+        .reclaim_idx = MAX_NR_ZONES - 1,
+        .priority = DEF_PRIORITY,
+        .may_unmap = 1,           // 필요하면 unmap
+        .may_writepage = !laptop_mode,       // writepage 금지
+        .may_swap = !!(reclaim_options & MEMCG_RECLAIM_MAY_SWAP),            // swap 금지
+        .proactive = 0,
+        .target_mem_cgroup = NULL, // memcg 대상 없음
+    };
+
+    struct zonelist *zonelist = node_zonelist(nid, sc.gfp_mask);
+
+    set_task_reclaim_state(current, &sc.reclaim_state);
+
+    /* 기존 do_try_to_free_pages를 DEMOTE 루틴용으로 호출 */
+    demoted = do_try_to_demote_pages(zonelist, &sc);
+
+    set_task_reclaim_state(current, NULL);
+
+    return demoted;
 }
 
-/*
- * Oldest generation folio를 수집
- * - folio_isolate_lru()를 사용하여 페이지를 안전하게 고립시키고 refcount를 증가시킴.
- * - LRU Lock (lruvec->lru_lock)이 외부 호출자(force_demote_pages)에 의해 잡혀있어야 함.
- */
-static int force_demote_lowest_gen_scan(struct lruvec *lruvec,
-                                         unsigned long nr_to_scan,
-                                         struct list_head *list)
+static int __init knicedemoted_init(void)
 {
-    int i, gen, type;
-    int isolated_pages = 0;
-    long remaining = nr_to_scan;
-    struct lru_gen_folio *lrugen = &lruvec->lrugen;
+    int nid;
 
-    // 외부에서 리스트가 비어 있음을 보장해야 합니다.
-    VM_WARN_ON_ONCE(!list_empty(list)); 
+    for (nid = 0; nid < MAX_NUMNODES; nid++) {
+        atomic_set(&demote_nodes[nid].in_progress, 0);
+        atomic_long_set(&demote_nodes[nid].target_pages, 0);
+        atomic_long_set(&demote_nodes[nid].demoted_pages, 0);
+        init_waitqueue_head(&demote_nodes[nid].wq);
+        spin_lock_init(&demote_nodes[nid].lock);
 
-    for (type = 0; type < 2; type++) { // 0: Anon, 1: File
-        if (get_nr_gens(lruvec, type) <= MIN_NR_GENS)
+        if (!kthread_run(demote_worker_fn, (void *)(unsigned long)nid, "knicedemoted/%d", nid))
+            pr_err("knicedemoted: failed to start worker for node %d\n", nid);
+    }
+
+    pr_info("knicedemoted: all workers initialized\n");
+    return 0;
+}
+late_initcall(knicedemoted_init);
+
+static int demote_worker_fn(void *arg)
+{
+    int nid = *(int *)arg;
+    struct demote_node *dn = &demote_nodes[nid];
+	int demoted;
+
+    allow_signal(SIGKILL); /* 커널 스레드 종료 가능하게 */
+
+    while (!kthread_should_stop()) {
+        long target;
+
+        /* sleep until work is queued */
+        wait_event_interruptible(dn->wq,
+            atomic_read(&dn->in_progress) || kthread_should_stop());
+
+        if (kthread_should_stop())
+            break;
+
+        /* grab target_pages atomically */
+        target = atomic_long_xchg(&dn->target_pages, 0);
+        if (target <= 0) {
+            /* spurious wakeup */
+            atomic_set(&dn->in_progress, 0);
             continue;
-
-        // 가장 낮은 세대(Oldest generation)부터 스캔 시작
-        gen = lru_gen_from_seq(lrugen->min_seq[type]); 
-
-        for (i = MAX_NR_ZONES; i > 0; i--) {
-            int zone = (i - 1) % MAX_NR_ZONES;
-            struct list_head *head = &lrugen->folios[gen][type][zone];
-            LIST_HEAD(moved); // 고립 실패한 페이지 임시 리스트
-
-            // 현재 Zone의 리스트가 빌 때까지 또는 목표치를 채울 때까지 반복
-            while (!list_empty(head)) {
-                struct folio *folio = lru_to_folio(head);
-                int delta = folio_nr_pages(folio);
-
-                // 1. Demote 불가 조건 확인 (DMA Pin 등)
-                if (folio_test_unevictable(folio) || folio_maybe_dma_pinned(folio)) {
-                    __move_folio_to_moved(folio, &moved);
-                    continue;
-                }
-
-                // 2. [안전한 고립 시도]
-                // - folio_isolate_lru()가 성공하면 folio는 head에서 제거되고,
-                //   참조 카운트(refcount)가 증가됩니다.
-                // - Bad page state 버그 방지를 위한 필수 단계입니다.
-                if (folio_isolate_lru(folio)) {
-                    
-                    // 3. 고립 성공: migrate_list에 추가
-                    list_add_tail(&folio->lru, list);
-                    isolated_pages += delta;
-                } else {
-                    // 고립 실패: (예: 페이지 락 경합, Dirty/Writeback 상태 등)
-                    // moved 리스트로 옮겨 잠시 후 다시 시도될 수 있도록 합니다.
-                    __move_folio_to_moved(folio, &moved);
-                }
-
-                // 4. 배치 제한 확인 및 루프 종료 조건
-                if (isolated_pages >= nr_to_scan) 
-                    break;
-                
-                remaining -= delta;
-                if (remaining <= 0)
-                    break;
-            }
-
-            // 고립에 실패한 페이지들을 원래 리스트의 꼬리에 다시 붙여 다음 스캔 때 시도
-            if (!list_empty(&moved))
-                list_splice_tail(&moved, head);
-
-            if (isolated_pages >= nr_to_scan || remaining <= 0)
-                break;
         }
 
-        if (isolated_pages >= nr_to_scan || remaining <= 0)
-            break;
+        printk(KERN_INFO "[DEMOTE-WORKER] Starting demote of %ld pages on nid %d\n", target, nid);
+
+        /* 실제 demote 처리: 기존 MGLRU + MEMCG_RECLAIM_DEMOTE 루틴 재사용 */
+        demoted = try_to_demote_pages(target, nid);
+
+        atomic_set(&dn->in_progress, 0);
+        printk(KERN_INFO "[DEMOTE-WORKER] Finished demote %ld on nid %d\n", demoted, nid);
     }
 
-    return isolated_pages;
-}
-
-/* 한 번의 Lock 구간에서 처리할 최대 페이지 수 (MGLRU 비트맵 최적화 크기) */
-#define DEMOTE_BATCH_SIZE 64 
-
-void force_demote_pages(int nid, unsigned long nr_pages, int nice_val)
-{
-    struct pglist_data *pgdat;
-    struct lruvec *lruvec;
-    LIST_HEAD(migrate_list);
-    struct folio *folio, *next;
-    
-    unsigned long collected_total = 0; /* 지금까지 총 수집한 페이지 수 */
-    unsigned long scanned_batch = 0;   /* 이번 루프에서 수집한 페이지 수 */
-    unsigned long remaining;
-
-    if (nid < 0 || nid >= MAX_NUMNODES)
-        nid = 0;
-
-    pgdat = NODE_DATA(nid);
-    if (!pgdat)
-        return;
-
-    /* --- LRUVEC 획득 로직 (기존 동일) --- */
-#ifdef CONFIG_MEMCG
-    {
-        struct mem_cgroup *memcg = get_mem_cgroup_from_mm(current->mm);
-        if (memcg) {
-            lruvec = mem_cgroup_lruvec(memcg, pgdat);
-            mem_cgroup_put(memcg);
-        } else {
-            lruvec = &pgdat->__lruvec;
-        }
-    }
-#else
-    lruvec = &pgdat->__lruvec;
-#endif
-
-    if (!lruvec)
-        return;
-
-    printk(KERN_INFO "[DEMOTE] Start scanning: target %lu pages, nice %d, nid %d\n",
-           nr_pages, nice_val, nid);
-
-    /* * [핵심 변경] 목표량을 채우거나 더 이상 페이지가 없을 때까지 반복 
-     */
-    while (collected_total < nr_pages) {
-        /* 이번 턴에 수집할 목표량 계산 (남은 양 vs 배치 사이즈 중 작은 값) */
-        remaining = nr_pages - collected_total;
-        unsigned long target_batch = (remaining > DEMOTE_BATCH_SIZE) ? DEMOTE_BATCH_SIZE : remaining;
-
-        spin_lock_irq(&lruvec->lru_lock);
-        
-        /* * force_demote_lowest_gen_scan 함수는 
-         * 요청한 target_batch 만큼만 수집하고 리턴하도록 구현되어 있어야 합니다.
-         * 수집된 페이지들은 lruvec에서 제거되어 migrate_list로 이동됩니다.
-         */
-        scanned_batch = force_demote_lowest_gen_scan(lruvec, target_batch, &migrate_list);
-        
-        spin_unlock_irq(&lruvec->lru_lock);
-
-        /* 수집된 것이 없으면 루프 탈출 (MGLRU가 비었거나 조건 불만족) */
-        if (scanned_batch == 0)
-            break;
-
-        collected_total += scanned_batch;
-
-        /* * [중요] 락을 풀었으므로 스케줄러에게 CPU를 양보할 기회를 줍니다.
-         * 이 코드가 있어야 RCU Stall / Soft Lockup 패닉이 발생하지 않습니다.
-         */
-        cond_resched();
-    }
-
-    /* 결과 출력 */
-    printk(KERN_INFO "[DEMOTE] Scan finished: %lu pages collected (Requested: %lu)\n",
-           collected_total, nr_pages);
-
-    /* --- 마이그레이션 실행 및 정리 --- */
-    unsigned long moved_pages = 0;
-    
-    // 컴파일 에러 해결을 위해 VMA를 NULL로 설정합니다.
-    struct vm_area_struct *vma = NULL; 
-    
-    list_for_each_entry_safe(folio, next, &migrate_list, lru) {
-        // 목표한 페이지 수를 초과했다면 더 이상 이동하지 않고 putback합니다.
-        if (moved_pages >= nr_pages)
-            break;
-        
-			// migrate_misplaced_folio_prepare가 vma->vm_flags를 접근할 때 NULL 패닉 방지
-        if (folio_is_file_lru(folio)) {
-            // prepare에서 VMA가 필요하므로 실패로 간주하고 putback 합니다.
-            list_del_init(&folio->lru);
-            folio_putback_lru(folio); 
-            continue; // 다음 폴리오로 이동
-        }
-        /* 1. 마이그레이션 준비: 언매핑 및 락 획득 시도 */
-        if (migrate_misplaced_folio_prepare(folio, vma, DEMOTE_TARGET_NID) == 0) {
-            
-            /* 2. 실제 마이그레이션 실행 */
-            if (migrate_misplaced_folio(folio, DEMOTE_TARGET_NID) == 0) {
-                 // 마이그레이션 성공
-                 moved_pages += folio_nr_pages(folio);
-                 list_del_init(&folio->lru);
-                 // migrate_misplaced_folio()가 내부적으로 refcount를 정리(put)했거나,
-                 // 성공적으로 PTE를 업데이트하고 페이지를 해제했어야 합니다.
-            } else {
-                 // 마이그레이션 실패 (e.g., CXL 공간 부족)
-                 list_del_init(&folio->lru);
-                 folio_putback_lru(folio); 
-            }
-        } else {
-            // prepare 실패 (e.g., 페이지 락, 더티 페이지, 언매핑 불가)
-            list_del_init(&folio->lru);
-            folio_putback_lru(folio);
-        }
-    }
-
-    // 목표치를 채워서 루프를 break하고 남은 페이지들 정리
-    list_for_each_entry_safe(folio, next, &migrate_list, lru) {
-        list_del_init(&folio->lru);
-        folio_putback_lru(folio); 
-    }
-    
-    printk(KERN_INFO "[DEMOTE] Pages successfully moved: %lu\n", moved_pages);
-    printk(KERN_INFO "[DEMOTE] force_demote_pages finished\n");
+    return 0;
 }

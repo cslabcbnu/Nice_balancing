@@ -452,7 +452,28 @@ static inline unsigned long total_swapcache_pages(void)
 void free_swap_cache(struct folio *folio);
 void free_page_and_swap_cache(struct page *);
 void free_pages_and_swap_cache(struct encoded_page **, int);
-void force_demote_pages(int nid, unsigned long nr_pages, int nice_val); // hayong
+
+/* hayong knicedemoted 
+
+implement in vmscan.c 
+trigger in mmap.c */
+
+struct demote_node {
+    atomic_long_t target_pages;
+    atomic_long_t demoted_pages;
+    atomic_t in_progress;
+    pid_t owner_pid;
+    unsigned long deadline_jiffies;
+    wait_queue_head_t wq;
+    spinlock_t lock;
+};
+
+extern struct demote_node demote_nodes[MAX_NUMNODES];
+
+long kernel_set_task_preferred_node(struct task_struct *task, int nid); // implement in mm/mempolicy.c
+
+// hayong knicedemoted 
+
 
 /* linux/mm/swapfile.c */
 extern atomic_long_t nr_swap_pages;

@@ -277,6 +277,21 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 	return true;
 }
 
+//hayong
+
+static void set_preferred_node_for_current(int nid)
+{
+    nodemask_t nodes;
+    nodes_clear(nodes);
+    node_set(nid, nodes);
+
+    if (kernel_set_task_preferred_node(current, nid) < 0)
+        printk(KERN_ERR "[DEMOTE] Failed to set preferred node %d\n", nid);
+    else
+        printk(KERN_INFO "[DEMOTE] Preferred node for current task set to %d\n", nid);
+}
+
+
 /**
  * do_mmap() - Perform a userland memory mapping into the current process
  * address space of length @len with protection bits @prot, mmap flags @flags
@@ -350,15 +365,48 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	if (!len)
 		return -EINVAL;
 
-    if (demote_enabled && len > 0) {
-        int nice_val = task_nice(current);
-        if (nice_val < 0) {
-            unsigned long nr_pages = len >> PAGE_SHIFT;
-            int dram_nid = 0;  /* DRAM 노드 ID 지정, 필요시 변경 */
-            printk(KERN_INFO "[NICE-BALANCING] do_mmap: Demote request %lu pages for nice %d process on nid %d\n", nr_pages, nice_val, dram_nid);
-            force_demote_pages(dram_nid, nr_pages, nice_val);
-        }
-    }
+    if (demote_enabled && len > 0) 
+	{
+    	int nice_val = task_nice(current);
+    	unsigned long nr_pages = len >> PAGE_SHIFT;
+    	int dram_nid = 0;  /* DRAM 노드 ID 지정, 필요시 변경 */
+    	struct demote_node *dn = &demote_nodes[dram_nid];
+
+    	if (nice_val < 0) 
+		{
+        /* --- nice<0: 워커에게 요청 enqueue + wakeup --- */
+        	spin_lock(&dn->lock);
+        	if (atomic_read(&dn->in_progress)) 
+			{
+            	/* 워커가 이미 작업 중이면 target 합산 */
+            	atomic_long_add(nr_pages, &dn->target_pages);
+        	} 
+			else 
+			{
+            /* 새로운 작업 요청 */
+            	atomic_set(&dn->in_progress, 1);
+            	atomic_long_set(&dn->target_pages, nr_pages);
+            	dn->owner_pid = current->pid;
+            	wake_up_interruptible(&dn->wq);
+        	}
+			
+        	spin_unlock(&dn->lock);
+
+        	printk(KERN_INFO "[NICE-BALANCING] do_mmap: queued %lu pages for demote (nice %d)\n",
+               nr_pages, nice_val);
+    	} 
+		else 
+		{
+        /* --- nice>=0: 워커 진행 중이면 DRAM 대신 CXL 할당 강제 --- */
+        	if (atomic_read(&dn->in_progress)) 
+			{
+            	/* allocator에서 preferred_nid를 CXL 노드로 지정 */
+            	set_preferred_node_for_current(1);
+            	printk(KERN_INFO "[NICE-BALANCING] do_mmap: nice >=0, forcing CXL allocation\n");
+        	}
+		}
+	}
+
 		
 	
 	/*
