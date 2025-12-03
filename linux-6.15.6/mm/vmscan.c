@@ -7848,7 +7848,7 @@ static int __init knicedemoted_init(void)
 {
     int nid;
 
-    for (nid = 0; nid < MAX_NUMNODES; nid++) {
+    for (nid = 0; nid < 1; nid++) {
         atomic_set(&demote_nodes[nid].in_progress, 0);
         atomic_long_set(&demote_nodes[nid].target_pages, 0);
         atomic_long_set(&demote_nodes[nid].demoted_pages, 0);
