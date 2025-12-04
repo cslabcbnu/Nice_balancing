@@ -4665,6 +4665,9 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 	 * There might not be eligible folios due to reclaim_idx. Check the
 	 * remaining to prevent livelock if it's not making progress.
 	 */
+
+	pr_info("SCAN_STATS: isolated=%lu, skipped=%lu, type=%s, gen=%d\n", isolated, skipped, type == LRU_GEN_ANON ? "ANON" : "FILE", gen);
+
 	return isolated || !remaining ? scanned : 0;
 }
 
@@ -7787,51 +7790,70 @@ EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 {
     struct pglist_data *pgdat = NODE_DATA(nid);
-    struct lruvec *lruvec;  /* [수정 1] 구조체 이름 lru_vec -> lruvec */
+    struct lruvec *lruvec;
     int swappiness;
     unsigned long initial_reclaimed;
-    
-    /* * [수정 2] 인자 순서 변경: (pgdat, NULL) -> (NULL, pgdat)
-     * 첫 번째 인자가 memcg, 두 번째가 pgdat 입니다.
-     * NULL을 넘기면 루트 cgroup(노드 전체)의 lruvec을 반환합니다.
-     */
+    int retry_age = 0;
+
     lruvec = mem_cgroup_lruvec(NULL, pgdat);
 
     struct scan_control sc = {
         .nr_to_reclaim = nr_pages,
-        .gfp_mask = GFP_HIGHUSER_MOVABLE, 
+        .gfp_mask = GFP_HIGHUSER_MOVABLE,
         .reclaim_idx = MAX_NR_ZONES - 1,
-        
-        /* MGLRU Cost 조작: Anon을 강제 스캔 */
         .anon_cost = 1,
-        .file_cost = 1000, 
-        
-        /* I/O 차단 -> Demote 유도 */
-        .may_writepage = 0, 
-        .may_swap = 1,      
-        .may_unmap = 1,     
-        
+        .file_cost = 1000,
+        .may_writepage = 0,
+        .may_swap = 1,
+        .may_unmap = 1,
         .no_demotion = 0,
         .priority = DEF_PRIORITY,
         .target_mem_cgroup = NULL,
     };
 
-    /* swappiness 가져오기 */
     swappiness = get_swappiness(lruvec, &sc);
 
-    /* 통계 집계용 초기화 */
     set_task_reclaim_state(current, &sc.reclaim_state);
     initial_reclaimed = sc.nr_reclaimed;
 
-    /* 강제 Eviction 루프 */
     while (sc.nr_reclaimed < nr_pages) {
         int scanned;
-        
-        /* evict_folios 직접 호출 */
+
         scanned = evict_folios(lruvec, &sc, swappiness);
 
-        if (!scanned)
-            break;
+        if (!scanned) {
+            /*
+             * No progress: try to force an MGLRU generation aging
+             * to produce more old-generation candidates.
+             *
+             * We retry aging only a limited number of times per call
+             * to avoid spinning excessively.
+             */
+            if (retry_age < 2) {
+                retry_age++;
+
+                /*
+                 * lru generation aging: choose node-level or lruvec-level API
+                 * depending on availability in your kernel (names may vary).
+                 * Examples:
+                 *  - lru_gen_age_node(pgdat);
+                 *  - lru_gen_age_lruvec(lruvec);
+                 *
+                 * The call below is symbolic — replace with correct function.
+                 */
+                lru_gen_age_node(pgdat); /* <-- adapt symbol to your kernel */
+
+                /* after aging, try scanning again immediately */
+                scanned = evict_folios(lruvec, &sc, swappiness);
+                if (!scanned) {
+                    /* still no scanned: break to avoid busy loop */
+                    break;
+                }
+            } else {
+                /* already retried aging a couple times — give up */
+                break;
+            }
+        }
 
         cond_resched();
     }
@@ -7841,9 +7863,10 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
     return sc.nr_reclaimed;
 }
 
+
 static int demote_worker_fn(void *arg)
 {
-    set_user_nice(current, -19);
+    set_user_nice(current, -1);
     int nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[nid];
     long demoted;
