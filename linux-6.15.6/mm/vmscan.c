@@ -70,6 +70,8 @@
 
 //hayong
 #define LAST_CPUPID_NOT_IN_PAGE_FLAGS
+struct demote_node demote_nodes[2];
+bool knicedemoted_enabled = false;
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
@@ -6337,7 +6339,7 @@ static void shrink_zones(struct zonelist *zonelist, struct scan_control *sc)
 		shrink_node(zone->zone_pgdat, sc);
 	}
 
-	if (first_pgdat)
+	if (first_pgdat && !knicedemoted_enabled)
 		consider_reclaim_throttle(first_pgdat, sc);
 
 	/*
@@ -7775,8 +7777,7 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
 
 EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 
-struct demote_node demote_nodes[2];
-bool knicedemoted_enabled = false;
+
 
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 {
@@ -7805,14 +7806,12 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
     return demoted;
 }
 
-/* 워커 함수 */
 static int demote_worker_fn(void *arg)
 {
-	set_user_nice(current, -19);
+    set_user_nice(current, -19);
     int nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[nid];
     long demoted;
-	knicedemoted_enabled = true;
 
     allow_signal(SIGKILL);
 
@@ -7826,25 +7825,36 @@ static int demote_worker_fn(void *arg)
         if (kthread_should_stop())
             break;
 
-        /* grab target_pages atomically */
+        /* 실제 target 가져오기 */
         target = atomic_long_xchg(&dn->target_pages, 0);
         if (target <= 0) {
             atomic_set(&dn->in_progress, 0);
+
+            /* 다시 잠들기 직전이므로 끔 */
+            knicedemoted_enabled = false;
             continue;
         }
+
+        /* ===== 여기서부터 워커가 '깨어있다' 라는 의미 ===== */
+        knicedemoted_enabled = true;
 
         printk(KERN_INFO "[DEMOTE-WORKER] Starting demote of %ld pages on nid %d\n",
                target, nid);
 
-        /* 실제 demote 처리: 기존 MGLRU + MEMCG_RECLAIM_DEMOTE 루틴 재사용 */
+        /* demote 수행 */
         demoted = try_to_demote_pages(target, nid);
 
+        printk(KERN_INFO "[DEMOTE-WORKER] Finished demote %ld on nid %d\n",
+               demoted, nid);
+
+        /* ===== 여기서부터 다시 sleep 상태 ===== */
         atomic_set(&dn->in_progress, 0);
-        printk(KERN_INFO "[DEMOTE-WORKER] Finished demote %ld on nid %d\n", demoted, nid);
+        knicedemoted_enabled = false;
     }
 
     return 0;
 }
+
 
 /* 초기화 함수 */
 static int __init knicedemoted_init(void)
