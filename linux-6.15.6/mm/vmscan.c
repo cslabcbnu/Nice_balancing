@@ -4665,9 +4665,6 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 	 * There might not be eligible folios due to reclaim_idx. Check the
 	 * remaining to prevent livelock if it's not making progress.
 	 */
-
-	pr_info("SCAN_STATS: isolated=%lu, skipped=%lu, type=%s, gen=%d\n", (unsigned long)isolated, (unsigned long)skipped, type == LRU_GEN_ANON ? "ANON" : "FILE", gen);
-	return isolated || !remaining ? scanned : 0;
 }
 
 static int get_tier_idx(struct lruvec *lruvec, int type)
@@ -7892,7 +7889,7 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 
 static int demote_worker_fn(void *arg)
 {
-    set_user_nice(current, -1);
+    set_user_nice(current, -10);
     int nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[nid];
     long demoted;
