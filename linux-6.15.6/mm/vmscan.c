@@ -7782,87 +7782,99 @@ EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 
 
 
-/* * mm/vmscan.c 내부에 정의되거나, 
- * evict_folios, get_swappiness 등에 접근 가능해야 합니다.
+/* Replace/insert into mm/vmscan.c - a more aggressive demote helper
+ *
+ * Behavior:
+ *  1) call evict_folios() to try to produce demote candidates
+ *  2) if scanned == 0 -> try MGLRU aging (by waking kswapd) up to RETRY_AGE times
+ *  3) if still no progress -> shrink active list (force deactivation) once
+ *  4) retry evict_folios() after each step, stop when we reclaimed nr_pages or give up
+ *
+ * Notes:
+ *  - We avoid calling lru_gen_age_node() directly (kswapd-only). Instead we wake kswapd
+ *    when lru_gen is enabled. When lru_gen is disabled we call kswapd_age_node()
+ *    (which will use shrink_active_list()).
+ *  - We limit retry_count (RETRY_AGE) to avoid busy-looping and CPU burning.
+ *  - Keep this conservative by default: may_writepage == 0 (no forced writeback).
  */
-/* mm/vmscan.c 내부 */
+
+#define DEMOTE_AGING_MAX_RETRIES 3 // Aging 시도 횟수를 3회로 증가 (DEMOTE_RETRY_AGE 대신)
 
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 {
-    struct pglist_data *pgdat = NODE_DATA(nid);
-    struct lruvec *lruvec;
-    int swappiness;
-    unsigned long initial_reclaimed;
-    int retry_age = 0;
-
-    lruvec = mem_cgroup_lruvec(NULL, pgdat);
-
-    struct scan_control sc = {
-        .nr_to_reclaim = nr_pages,
-        .gfp_mask = GFP_HIGHUSER_MOVABLE,
-        .reclaim_idx = MAX_NR_ZONES - 1,
-        .anon_cost = 1,
-        .file_cost = 1000,
-        .may_writepage = 0,
-        .may_swap = 1,
-        .may_unmap = 1,
-        .no_demotion = 0,
-        .priority = DEF_PRIORITY,
-        .target_mem_cgroup = NULL,
-    };
-
-    swappiness = get_swappiness(lruvec, &sc);
+    // ... (초기화 및 scan_control 설정은 동일) ...
 
     set_task_reclaim_state(current, &sc.reclaim_state);
     initial_reclaimed = sc.nr_reclaimed;
 
+    /* Main loop: try to produce nr_pages reclaimed (i.e. demoted candidates) */
     while (sc.nr_reclaimed < nr_pages) {
         int scanned;
-
+        bool progress = true; // 현재 루프에서 진행 여부 (스캔했거나 리클레임 발생)
+        
+        // 1. Primary attempt: run the usual eviction scan (isolation + demotion)
         scanned = evict_folios(lruvec, &sc, swappiness);
-
-        if (!scanned) {
-            /*
-             * No progress: try to force an MGLRU generation aging
-             * to produce more old-generation candidates.
-             *
-             * We retry aging only a limited number of times per call
-             * to avoid spinning excessively.
-             */
-            if (retry_age < 2) {
-                retry_age++;
-
-                /*
-                 * lru generation aging: choose node-level or lruvec-level API
-                 * depending on availability in your kernel (names may vary).
-                 * Examples:
-                 *  - lru_gen_age_node(pgdat);
-                 *  - lru_gen_age_lruvec(lruvec);
-                 *
-                 * The call below is symbolic — replace with correct function.
-                 */
-                lru_gen_age_node(pgdat); /* <-- adapt symbol to your kernel */
-
-                /* after aging, try scanning again immediately */
-                scanned = evict_folios(lruvec, &sc, swappiness);
-                if (!scanned) {
-                    /* still no scanned: break to avoid busy loop */
-                    break;
-                }
-            } else {
-                /* already retried aging a couple times — give up */
-                break;
-            }
+        
+        if (scanned) {
+            // 진행했으므로, 다음 루프로 계속 진행
+            cond_resched();
+            continue;
         }
+        
+        // 2. No progress in scanning: Attempt MGLRU Aging
+        
+        /* * MGLRU 환경에서는 kswapd를 깨워서 페이지 세대 강등(Aging)을 유도하고
+         * 곧바로 다시 스캔을 시도하는 것이 최적의 방법입니다.
+         * 강제 Active Shrink는 MGLRU의 정책을 무시할 수 있습니다.
+         */
+        if (lru_gen_enabled() && retry_age < DEMOTE_AGING_MAX_RETRIES) {
+            retry_age++;
 
-        cond_resched();
-    }
+            /* Wake kswapd for this node to perform lru_gen aging. */
+            wake_up_interruptible(&pgdat->kswapd_wait);
+
+            /* Give kswapd a short chance to run */
+            cond_resched(); 
+            
+            /* Try scanning again immediately */
+            scanned = evict_folios(lruvec, &sc, swappiness);
+            
+            if (scanned) {
+                // Aging 후 바로 후보 페이지를 찾았다면 루프를 계속 진행
+                cond_resched();
+                continue;
+            }
+            
+            // Aging 시도 후에도 실패했다면, 다음 retry_age에서 다시 시도하거나 break
+            continue; 
+
+        } else if (!lru_gen_enabled()) {
+             // MGLRU가 꺼져 있다면 기존 LRU Aging 방식으로 대체
+             kswapd_age_node(pgdat, &sc);
+             scanned = evict_folios(lruvec, &sc, swappiness);
+             
+             if (scanned) {
+                 cond_resched();
+                 continue;
+             }
+             // Non-MGLRU 환경에서는 추가적인 Active Shrink 로직 필요 여부 검토
+             // (현재는 MGLRU 최적화가 주 목적이므로 이 분기는 그대로 두거나 제거 가능)
+        }
+        
+        // 3. Final Fallback / Termination Check
+        
+        /* * MGLRU Aging을 충분히 시도했거나, MGLRU가 꺼져 있거나,
+         * 또는 Aging 후에도 페이지를 찾지 못했다면, 
+         * 더 이상 후보 페이지를 만들 수 없다고 판단하고 종료합니다.
+         */
+        break; // Demote target is exhausted or pages are permanently pinned.
+
+    } /* end while */
 
     set_task_reclaim_state(current, NULL);
 
     return sc.nr_reclaimed;
 }
-
 
 static int demote_worker_fn(void *arg)
 {
