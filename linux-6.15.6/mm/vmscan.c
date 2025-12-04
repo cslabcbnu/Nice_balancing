@@ -7779,31 +7779,76 @@ EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 
 
 
+/* * mm/vmscan.c 내부에 정의되거나, 
+ * evict_folios, get_swappiness 등에 접근 가능해야 합니다.
+ */
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 {
-    unsigned long demoted = 0;
+    struct pglist_data *pgdat = NODE_DATA(nid);
+    struct lru_vec *lruvec;
+    int swappiness;
+    unsigned long initial_reclaimed;
+    
+    /* 1. 타겟 노드의 LRU Vector 확보 (Memcg 무관, 노드 전체) */
+    lruvec = mem_cgroup_lruvec(pgdat, NULL);
+
+    /* 2. 공격적인 Scan Control 설정 */
     struct scan_control sc = {
         .nr_to_reclaim = nr_pages,
-        .gfp_mask = (GFP_KERNEL & GFP_RECLAIM_MASK) |
-				(GFP_HIGHUSER_MOVABLE & ~GFP_RECLAIM_MASK),   // kernel allocation
+        
+        /* 이동 가능한(Demotable) 페이지만 타겟팅 */
+        .gfp_mask = GFP_HIGHUSER_MOVABLE, 
+        
+        /* 전체 존 스캔 */
         .reclaim_idx = MAX_NR_ZONES - 1,
+        
+        /* MGLRU Cost 조작: Anon을 공짜(1)로 취급하여 무조건 Anon부터 스캔 */
+        .anon_cost = 1,
+        .file_cost = 1000, 
+        
+        /* 중요: Disk I/O(Swap Out)를 원천 차단하여 Demote 유도 */
+        .may_writepage = 0, 
+        
+        /* Anon Page 스캔을 위해 Swap은 켜두되, 위 옵션으로 I/O는 막음 */
+        .may_swap = 1,      
+        .may_unmap = 1,     /* 매핑 해제 필수 */
+        
+        .no_demotion = 0,   /* Demote 허용 */
         .priority = DEF_PRIORITY,
-        .may_unmap = 1,           // 필요하면 unmap
-        .may_writepage = !laptop_mode,       // writepage 금지
-        .may_swap = 1,
-        .proactive = 0,
-        .target_mem_cgroup = NULL, // memcg 대상 없음
+        .target_mem_cgroup = NULL,
     };
 
-    struct zonelist *zonelist = node_zonelist(nid, sc.gfp_mask);
+    /* 3. Swappiness 계산 (evict_folios 인자용) */
+    swappiness = get_swappiness(lruvec, &sc);
 
+    /* 통계 집계용 초기화 */
     set_task_reclaim_state(current, &sc.reclaim_state);
+    initial_reclaimed = sc.nr_reclaimed;
 
-    demoted = do_try_to_free_pages(zonelist, &sc);
+    /* 4. 강제 Eviction 루프 */
+    while (sc.nr_reclaimed < nr_pages) {
+        int scanned;
+        
+        /* * evict_folios 직접 호출 
+         * - 상위 루프(shrink_node)를 거치지 않고 바로 LRU 리스트 타격
+         * - 설정한 sc에 따라 MGLRU Cold Anon Page를 격리 후 Demote 시도
+         */
+        scanned = evict_folios(lruvec, &sc, swappiness);
+
+        /* * 진행이 안 되면(Scanned가 0이면) 탈출 
+         * (더 이상 Demote 할 페이지가 없거나 락 경합 등)
+         */
+        if (!scanned)
+            break;
+
+        /* 커널 스케줄링 양보 (대량 처리 시 락업 방지) */
+        cond_resched();
+    }
 
     set_task_reclaim_state(current, NULL);
 
-    return demoted;
+    /* 실제로 처리된 페이지 수 반환 (Demote + Reclaim 포함되나 세팅상 대부분 Demote일 것) */
+    return sc.nr_reclaimed;
 }
 
 static int demote_worker_fn(void *arg)

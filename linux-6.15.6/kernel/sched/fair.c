@@ -1929,11 +1929,11 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
 	int last_cpupid, this_cpupid;
 
 	// hayong 
-	if(knicedemoted_enabled)
-	{
-		if(dst_nid == 1 && src_nid ==0)
-			return false;
-	}
+
+	int niceval = task_nice(current);
+
+	if(knicedemoted_enabled && niceval >= 0 && dst_nid == 1 && src_nid ==0)
+		return false;
 
 	/*
 	 * Cannot migrate to memoryless nodes.
