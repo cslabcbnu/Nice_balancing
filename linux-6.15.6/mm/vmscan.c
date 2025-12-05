@@ -7803,77 +7803,91 @@ EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 {
     struct pglist_data *pgdat = NODE_DATA(nid);
-    struct lruvec *lruvec = mem_cgroup_lruvec(NULL, pgdat);
+    struct lruvec *lruvec;
     int swappiness;
-    int retry_age = 0;
+    unsigned long initial_reclaimed;
+    int retry_age = 0; // <--- retry_age를 선언
 
-    /* 개선된 scan_control: 더 적극적인 demote */
+    /* zonal / memcg view: root memcg for the node */
+    lruvec = mem_cgroup_lruvec(NULL, pgdat);
+
+    /* sc를 함수 선언부 바로 다음에 정의 및 초기화 */
     struct scan_control sc = {
         .nr_to_reclaim = nr_pages,
-        .gfp_mask = GFP_KERNEL,             // ★ 변경
-        .priority = DEF_PRIORITY - 2,       // ★ 변경 (높은 우선순위)
-        .may_writepage = 1,                 // ★ 변경 (dirty page 허용)
-        .may_swap = 0,                      // ★ 변경 (demote는 swap 불필요)
+        .gfp_mask = GFP_HIGHUSER_MOVABLE,
+        .reclaim_idx = MAX_NR_ZONES - 1,
+        .anon_cost = 1,
+        .file_cost = 1000,
+        .may_writepage = 0,
+        .may_swap = 1,
         .may_unmap = 1,
         .no_demotion = 0,
-        .anon_cost = 100,                   // ★ 변경
-        .file_cost = 10,                    // ★ 변경 (file page 적극 스캔)
+        .priority = DEF_PRIORITY,
         .target_mem_cgroup = NULL,
     };
 
+    /* swappiness is per-lruvec decision helper */
     swappiness = get_swappiness(lruvec, &sc);
-    set_task_reclaim_state(current, &sc.reclaim_state);
 
-    /* Main loop */
+    set_task_reclaim_state(current, &sc.reclaim_state);
+    initial_reclaimed = sc.nr_reclaimed;
+
+    /* Main loop: try to produce nr_pages reclaimed (i.e. demoted candidates) */
     while (sc.nr_reclaimed < nr_pages) {
         int scanned;
-
-        /* 1. Primary eviction scan */
+        // bool progress = true; // 'progress' 변수는 사용되지 않으므로 제거하거나 주석 처리
+        
+        /* Primary attempt: run the usual eviction scan */
         scanned = evict_folios(lruvec, &sc, swappiness);
+        
         if (scanned) {
             cond_resched();
             continue;
         }
-
-        /* 2. MGLRU Aging: 직접 호출로 변경 ★★ */
+        
+        // 2. No progress in scanning: Attempt MGLRU Aging
+        
         if (lru_gen_enabled() && retry_age < DEMOTE_AGING_MAX_RETRIES) {
             retry_age++;
-            
-            unsigned long max_seq = READ_ONCE(lruvec->lrugen.max_seq);
-            
-            /* ★★ 핵심: 직접 aging 트리거 ★★ */
-            bool aging_success = try_to_inc_max_seq(lruvec, max_seq, 
-                                                  swappiness, true);  // force_scan=true
-            
-            pr_info("[DEMOTE] aging try %d, seq=%lu, success=%d\n", 
-                    retry_age, max_seq, aging_success);
-            
-            cond_resched();
-            
-            /* Aging 후 즉시 재시도 */
-            scanned = evict_folios(lruvec, &sc, swappiness);
-            if (scanned) {
-                cond_resched();
-                continue;
-            }
-        } else if (!lru_gen_enabled()) {
-            /* Legacy LRU fallback */
-            kswapd_age_node(pgdat, &sc);
-            scanned = evict_folios(lruvec, &sc, swappiness);
-            if (scanned) {
-                cond_resched();
-                continue;
-            }
-        }
 
-        /* 3. No more pages to demote */
+            /* Wake kswapd for this node to perform lru_gen aging. */
+            wake_up_interruptible(&pgdat->kswapd_wait);
+
+            /* Give kswapd a short chance to run */
+            cond_resched(); 
+            
+            /* Try scanning again immediately */
+            scanned = evict_folios(lruvec, &sc, swappiness);
+            
+            if (scanned) {
+                cond_resched();
+                continue;
+            }
+            
+            // Aging 시도 후에도 실패했다면, 다음 retry_age에서 다시 시도하거나 break
+            continue; 
+
+        } else if (!lru_gen_enabled()) {
+             // MGLRU가 꺼져 있다면 기존 LRU Aging 방식으로 대체
+             kswapd_age_node(pgdat, &sc);
+             scanned = evict_folios(lruvec, &sc, swappiness);
+             
+             if (scanned) {
+                 cond_resched();
+                 continue;
+             }
+        }
+        
+        // 3. Final Fallback / Termination Check
+        
+        /* MGLRU Aging을 충분히 시도했거나, 페이지를 찾지 못했다면 종료 */
         break;
     }
 
     set_task_reclaim_state(current, NULL);
-    return sc.nr_reclaimed;
-}
 
+    return sc.nr_reclaimed; // <--- 명시적 return 추가
+}
 
 static int demote_worker_fn(void *arg)
 {
