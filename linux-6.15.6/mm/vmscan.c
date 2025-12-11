@@ -7822,7 +7822,7 @@ retry_scan:
 
         /* isolate_folios는 lru_lock 보유 상태에서 호출하는 것이 원칙 */
         isolated = isolate_folios(lruvec, &sc, swappiness, &type, &list);
-		printk("[DEMOTE] isolate scanned=%lu isolated=%d\n", scanned, isolated);
+		//printk("[DEMOTE] isolate scanned=%lu isolated=%d\n", scanned, isolated);
         scanned += isolated;
 
         /*
