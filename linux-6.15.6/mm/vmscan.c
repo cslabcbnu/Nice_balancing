@@ -7828,8 +7828,7 @@ retry_scan:
          * try_to_inc_min_seq는 min_seq를 올려 cold 풀을 넓히는 시도다.
          * 반환값은 "min_seq가 실제로 올라갔는가" 이므로 scanned에 더하지 않는다.
          */
-        if (try_to_inc_min_seq(lruvec, swappiness))
-            ; /* min_seq 증가 시도했음 — 다음 루프에서 isolate_folios가 더 많은 후보를 줄 수 있음 */
+        try_to_inc_min_seq(lruvec, swappiness); /* min_seq 증가 시도했음 — 다음 루프에서 isolate_folios가 더 많은 후보를 줄 수 있음 */
 
         /* 더 이상 gen을 내릴 수 없으면 중단 */
         if (evictable_min_seq(lrugen->min_seq, swappiness) + MIN_NR_GENS > lrugen->max_seq)
