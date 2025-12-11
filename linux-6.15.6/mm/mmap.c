@@ -370,48 +370,59 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	if (!len)
 		return -EINVAL;
 
-    if (demote_enabled && len > 0) 
-	{
-    	int nice_val = task_nice(current);
-    	unsigned long nr_pages = len >> PAGE_SHIFT;
-    	struct demote_node *dn = &demote_nodes[DRAM_NODE_ID];
+	if (demote_enabled && len > 0) {
+		int nice_val = task_nice(current);
+		unsigned long nr_pages = len >> PAGE_SHIFT;
+		struct demote_node *dn = &demote_nodes[DRAM_NODE_ID];
 
-    	if (nice_val < 0) 
-		{
-        /* --- nice<0: 워커에게 요청 enqueue + wakeup --- */
-        	spin_lock(&dn->lock);
-        	if (atomic_read(&dn->in_progress)) 
-			{
-            	/* 워커가 이미 작업 중이면 target 합산 */
-            	atomic_long_add(nr_pages, &dn->target_pages);
-        	} 
-			else 
-			{
-            /* 새로운 작업 요청 */
-            	atomic_set(&dn->in_progress, 1);
-            	atomic_long_set(&dn->target_pages, nr_pages);
-            	dn->owner_pid = current->pid;
-            	wake_up_interruptible(&dn->wq);
-        	}
-			
-        	spin_unlock(&dn->lock);
+		/*
+		* nice < 0 : DRAM 우선 사용자 → DRAM 확보를 위해 demote 요청
+		*/
+		if (nice_val < 0) {
+			spin_lock(&dn->lock);
 
-        	printk(KERN_INFO "[NICE-BALANCING] do_mmap: queued %lu pages for demote (nice %d)\n",
-               nr_pages, nice_val);
-    	} 
-		else 
-		{
-        /* --- nice>=0: 워커 진행 중이면 DRAM 대신 CXL 할당 강제 --- */
-        	if (atomic_read(&dn->in_progress)) 
-			{
-            	/* allocator에서 preferred_nid를 CXL 노드로 지정 */
-            	set_preferred_node_for_current(CXL_NODE_ID);
-            	printk(KERN_INFO "[NICE-BALANCING] do_mmap: nice >=0, forcing CXL allocation\n");
-        	}
+			if (atomic_read(&dn->in_progress)) {
+				/* 워커가 이미 동작 중 → 추가 요청 누적 */
+				atomic_long_add(nr_pages, &dn->target_pages);
+
+				printk(KERN_INFO
+					"[NICE-BALANCING] do_mmap: appended %lu pages (total now %ld) for demote (nice=%d)\n",
+					nr_pages,
+					atomic_long_read(&dn->target_pages),
+					nice_val);
+
+			} else {
+				/* 새로운 작업 요청 시작 */
+				atomic_set(&dn->in_progress, 1);
+				atomic_long_set(&dn->target_pages, nr_pages);
+
+				dn->owner_pid = current->pid;
+
+				printk(KERN_INFO
+					"[NICE-BALANCING] do_mmap: queued %lu pages for demote (nice=%d)\n",
+					nr_pages, nice_val);
+
+				/* 워커 깨움 */
+				wake_up_interruptible(&dn->wq);
+			}
+
+			spin_unlock(&dn->lock);
+
+		} else {
+			/*
+			* nice >= 0 : DRAM 비우는 중이면 이 프로세스의 신규 mmap은 CXL에서 할당
+			* 즉, “DRAM 비우는 동안에는 DRAM 경쟁 낮음”
+			*/
+			if (atomic_read(&dn->in_progress)) {
+
+				/* 이미 prior_alloc 노드를 DRAM → CXL로 전환 */
+				set_preferred_node_for_current(CXL_NODE_ID);
+
+				printk(KERN_INFO
+					"[NICE-BALANCING] do_mmap: nice >=0, DRAM demote in progress → forcing CXL allocation\n");
+			}
 		}
 	}
-
-		
 	
 	/*
 	 * Does the application expect PROT_READ to imply PROT_EXEC?
