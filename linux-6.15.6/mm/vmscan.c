@@ -7798,7 +7798,7 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
         .priority         = DEF_PRIORITY,
         .may_writepage    = 1,
         .may_swap         = 1,
-        .may_unmap        = 0,
+        .may_unmap        = 1,
         .no_demotion      = 0,
         .target_mem_cgroup = NULL,
     };
