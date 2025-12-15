@@ -1337,6 +1337,9 @@ retry:
 		 */
 		if (do_demote_pass &&
 		    (thp_migration_supported() || !folio_test_large(folio))) {
+			
+			printk(KERN_DEBUG "[DEMOTE-CAND] folio=%p pfn=%lu node=%d nr_pages=%u anon=%d file=%d dirty=%d mapped=%d\n", folio, folio_pfn(folio), folio_nid(folio), nr_pages, folio_test_anon(folio), folio_is_file_lru(folio), folio_test_dirty(folio), folio_mapped(folio));
+
 			list_add(&folio->lru, &demote_folios);
 			folio_unlock(folio);
 			continue;
@@ -7794,12 +7797,10 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
 
     struct scan_control sc = {
         .nr_to_reclaim    = nr_pages,
-        .gfp_mask         = GFP_KERNEL,
+        .gfp_mask = GFP_HIGHUSER_MOVABLE | __GFP_RETRY_MAYFAIL,
         .priority         = DEF_PRIORITY,
-        .may_writepage    = 1,
         .may_swap         = 1,
         .may_unmap        = 1,
-        .no_demotion      = 0,
         .target_mem_cgroup = NULL,
     };
 
