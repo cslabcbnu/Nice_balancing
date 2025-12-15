@@ -1338,7 +1338,7 @@ retry:
 		if (do_demote_pass &&
 		    (thp_migration_supported() || !folio_test_large(folio))) {
 			
-			printk(KERN_DEBUG "[DEMOTE-CAND] folio=%p pfn=%lu node=%d nr_pages=%u anon=%d file=%d dirty=%d mapped=%d\n", folio, folio_pfn(folio), folio_nid(folio), nr_pages, folio_test_anon(folio), folio_is_file_lru(folio), folio_test_dirty(folio), folio_mapped(folio));
+			//printk(KERN_DEBUG "[DEMOTE-CAND] folio=%p pfn=%lu node=%d nr_pages=%u anon=%d file=%d dirty=%d mapped=%d\n", folio, folio_pfn(folio), folio_nid(folio), nr_pages, folio_test_anon(folio), folio_is_file_lru(folio), folio_test_dirty(folio), folio_mapped(folio));
 
 			list_add(&folio->lru, &demote_folios);
 			folio_unlock(folio);
@@ -7872,7 +7872,7 @@ retry_scan:
 
         total_evicted += demoted;
 
-        pr_info("[DEMOTE] demoted=%u total=%lu target=%lu scanned=%lu\n",
+        pr_info("[DEMOTE-success] demoted=%u total=%lu target=%lu scanned=%lu\n",
                 demoted, total_evicted, nr_pages, scanned);
 
         /* 확보량 조건 만족 → 종료 */
