@@ -7860,20 +7860,20 @@ retry_scan:
      * ===========================================================
      */
     if (!list_empty(&list)) {
-        unsigned int evicted;
+        unsigned int demoted;
         struct reclaim_stat stat;
 
         /* shrink_folio_list signature: (list, pgdat, sc, stat, ignore_refs) */
-        evicted = shrink_folio_list(&list, pgdat, &sc, &stat, false);
+        demoted = demote_folio_list(&list, pgdat);
 
         /* accounting from shrink */
         sc.nr.unqueued_dirty += stat.nr_unqueued_dirty;
-        sc.nr_reclaimed += evicted;
+        sc.nr_reclaimed += demoted;
 
-        total_evicted += evicted;
+        total_evicted += demoted;
 
-        pr_info("[DEMOTE] evicted=%u total=%lu target=%lu scanned=%lu\n",
-                evicted, total_evicted, nr_pages, scanned);
+        pr_info("[DEMOTE] demoted=%u total=%lu target=%lu scanned=%lu\n",
+                demoted, total_evicted, nr_pages, scanned);
 
         /* 확보량 조건 만족 → 종료 */
         if (total_evicted >= nr_pages)
