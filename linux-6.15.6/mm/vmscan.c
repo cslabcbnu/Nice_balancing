@@ -7834,12 +7834,9 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
         }
 
         collected += isolated;
-		pr_info("[DEMOTE] collected=%lu quota=%lu min_seq=%lu max_seq=%lu\n",
-        collected, quota,
-        lruvec->lrugen.min_seq[0],
-        lruvec->lrugen.max_seq);
+		printk(KERN_INFO "[KDEMOTE][COLLECT] done collected=%lu quota=%lu\n", collected, quota);
 
-    }
+	}
 
     spin_unlock_irq(&lruvec->lru_lock);
     return collected;
@@ -7873,8 +7870,7 @@ static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, 
         nr_ready++;
     }
 
-	pr_info("[DEMOTE] prepared=%lu\n", nr_ready);
-
+	printk(KERN_INFO "[KDEMOTE][PREP] prepared=%lu\n", nr_ready);
 
     return nr_ready;
 }
@@ -7890,6 +7886,7 @@ static unsigned long migrate_demote_folios(struct list_head *list,
     if (!list_empty(list))
         putback_movable_pages(list);
 
+	printk(KERN_INFO "[KDEMOTE][MIGRATE] succeeded=%u remaining=%d\n", nr_succeeded, nr_remaining);
     return nr_succeeded;
 }
 
@@ -7932,10 +7929,9 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
         migrated += nr_migrated;
 
         cond_resched();
+
+		pr_info("[DEMOTE] migrated=%lu\n", nr_migrated);
     }
-
-	pr_info("[DEMOTE] migrated=%lu\n", nr_migrated);
-
 
     return migrated;
 }
