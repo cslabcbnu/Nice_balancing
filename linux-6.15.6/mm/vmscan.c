@@ -7860,7 +7860,6 @@ static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, 
     unsigned long nr_ready = 0;
 
     list_for_each_entry_safe(folio, next, from, lru) {
-        int ret;
 
         if (!folio_can_demote(folio))
             continue;
