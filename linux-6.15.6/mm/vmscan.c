@@ -7844,8 +7844,6 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
 
 static bool folio_can_demote(struct folio *folio)
 {
-    if (!folio_evictable(folio))
-        return false;
 
     if (folio_test_writeback(folio))
         return false;
