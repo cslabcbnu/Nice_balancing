@@ -7834,6 +7834,11 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
         }
 
         collected += isolated;
+		pr_info("[DEMOTE] collected=%lu quota=%lu min_seq=%lu max_seq=%lu\n",
+        collected, quota,
+        lruvec->lrugen.min_seq[0],
+        lruvec->lrugen.max_seq);
+
     }
 
     spin_unlock_irq(&lruvec->lru_lock);
@@ -7867,6 +7872,9 @@ static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, 
         list_move(&folio->lru, ready);
         nr_ready++;
     }
+
+	pr_info("[DEMOTE] prepared=%lu\n", nr_ready);
+
 
     return nr_ready;
 }
@@ -7925,6 +7933,9 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 
         cond_resched();
     }
+
+	pr_info("[DEMOTE] migrated=%lu\n", nr_migrated);
+
 
     return migrated;
 }
