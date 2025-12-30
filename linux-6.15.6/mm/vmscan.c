@@ -7865,14 +7865,6 @@ static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, 
         if (!folio_can_demote(folio))
             continue;
 
-        /* active → inactive (LRU 불변식 보존) */
-        if (folio_test_active(folio))
-            folio_clear_active(folio);
-
-        ret = migrate_misplaced_folio_prepare(folio, NULL, dst_nid);
-        if (ret)
-            continue;
-
         list_move(&folio->lru, ready);
         nr_ready++;
     }
@@ -7977,14 +7969,14 @@ static int demote_worker_fn(void *arg)
 
         /* 완료 표시 (순서: 작업 완료 후 in_progress 클리어) */
         
-		if (demoted < target) 
-		{
-			long remain = target - demoted;
-			atomic_long_add(remain, &dn->target_pages);
-			atomic_set(&dn->in_progress, 1);
-			wake_up_interruptible(&dn->wq);
-			continue;
-		}
+		// if (demoted < target) 
+		// {
+		// 	long remain = target - demoted;
+		// 	atomic_long_add(remain, &dn->target_pages);
+		// 	atomic_set(&dn->in_progress, 1);
+		// 	wake_up_interruptible(&dn->wq);
+		// 	continue;
+		// }
 
 		atomic_set(&dn->in_progress, 0);
 
