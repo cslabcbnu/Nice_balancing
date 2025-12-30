@@ -1932,7 +1932,7 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
 
 	int niceval = task_nice(current);
 
-	if(knicedemoted_enabled && niceval >= 0 && dst_nid == 1 && src_nid ==0)
+	if(knicedemoted_enabled && niceval >= 0 && dst_nid == 0 && src_nid == 1)
 		return false;
 
 	/*

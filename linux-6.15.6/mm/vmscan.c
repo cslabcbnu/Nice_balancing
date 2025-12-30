@@ -7781,116 +7781,162 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
 
 EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
 
-static unsigned long try_to_demote_pages(unsigned long nr_pages, int nid)
+/* hayong Kdemoted */
+/*
+ * knicedemoted is NOT a reclaim worker.
+ *
+ * It must never:
+ *  - reclaim pages
+ *  - trigger writeback
+ *  - swap out memory
+ *
+ * It only migrates pages to create DRAM headroom
+ * for high-priority allocations.
+ */
+
+static inline void init_demote_sc(struct scan_control *sc, unsigned long quota)
 {
-    struct pglist_data *pgdat = NODE_DATA(nid);
-    struct lruvec *lruvec = mem_cgroup_lruvec(NULL, pgdat);
+    memset(sc, 0, sizeof(*sc));
+
+    sc->nr_to_reclaim = quota;        /* isolate loop bound */
+    sc->gfp_mask = GFP_HIGHUSER_MOVABLE;
+    sc->priority = 0;                 /* reclaim aggressiveness 제거 */
+    sc->may_unmap = 1;
+    sc->may_writepage = 1;
+    sc->may_swap = 0;                 /* reclaim 의미 제거 */
+    sc->target_mem_cgroup = NULL;
+}
+
+unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned long quota, struct list_head *list)
+{
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
-    struct list_head list;
-    unsigned long total_evicted = 0;
-    unsigned long scanned;
-    int swappiness;
-    int scan_retries = 0;
-    int shrink_retries = 0;
+    struct scan_control sc;
+    unsigned long collected = 0;
+    int swappiness = 0;
 
-    INIT_LIST_HEAD(&list);
+    init_demote_sc(&sc, quota);
 
-    struct scan_control sc = {
-        .nr_to_reclaim    = nr_pages,
-        .gfp_mask = GFP_HIGHUSER_MOVABLE | __GFP_RETRY_MAYFAIL,
-        .priority         = DEF_PRIORITY,
-        .may_swap         = 1,
-        .may_unmap        = 1,
-        .target_mem_cgroup = NULL,
-    };
-
-    swappiness = get_swappiness(lruvec, &sc);
-    set_task_reclaim_state(current, &sc.reclaim_state);
-
-retry_scan:
-    scanned = 0;
-    INIT_LIST_HEAD(&list);
-
-    /* ===========================================================
-     * 1) LRU Lock 잡고 isolate_folios + try_to_inc_min_seq 반복
-     * ===========================================================
-     */
     spin_lock_irq(&lruvec->lru_lock);
 
-    while (scanned < nr_pages) {
+    while (collected < quota) {
         int type = 0;
         int isolated;
 
-        /* isolate_folios는 lru_lock 보유 상태에서 호출하는 것이 원칙 */
-        isolated = isolate_folios(lruvec, &sc, swappiness, &type, &list);
-		//printk("[DEMOTE] isolate scanned=%lu isolated=%d\n", scanned, isolated);
-        scanned += isolated;
+        isolated = isolate_folios(lruvec, &sc, swappiness, &type, list);
 
-        /*
-         * try_to_inc_min_seq는 min_seq를 올려 cold 풀을 넓히는 시도다.
-         * 반환값은 "min_seq가 실제로 올라갔는가" 이므로 scanned에 더하지 않는다.
-         */
-        try_to_inc_min_seq(lruvec, swappiness); /* min_seq 증가 시도했음 — 다음 루프에서 isolate_folios가 더 많은 후보를 줄 수 있음 */
+        if (!isolated) {
+            if (!try_to_inc_min_seq(lruvec, swappiness))
+                break;
 
-        /* 더 이상 gen을 내릴 수 없으면 중단 */
-        if (evictable_min_seq(lrugen->min_seq, swappiness) + MIN_NR_GENS > lrugen->max_seq)
-            break;
+            if (evictable_min_seq(lrugen->min_seq, swappiness) +
+                MIN_NR_GENS > lrugen->max_seq)
+                break;
+        }
 
-        if (scanned >= nr_pages)
-            break;
+        collected += isolated;
     }
 
     spin_unlock_irq(&lruvec->lru_lock);
-
-    /*
-     * 후보 folio를 충분히 못 모은 경우: min_seq를 좀 더 시도해서 재스캔
-     * (max_seq 증가가 아니라 min_seq 증가를 반복해야 active도 점차 cold로 내려온다)
-     */
-    if (scanned < nr_pages) {
-        if (scan_retries++ < 5) {
-            /* 이미 try_to_inc_min_seq 했지만 부족한 경우 약간의 대기/재시도 루프 허용 */
-            cond_resched();
-            goto retry_scan;
-        }
-    }
-
-    /* ===========================================================
-     * 2) shrink_folio_list() 실행
-     *    - 실제 DRAM에서 빠져나간 페이지만큼 반환됨
-     * ===========================================================
-     */
-    if (!list_empty(&list)) {
-        unsigned int demoted;
-        struct reclaim_stat stat;
-
-        /* shrink_folio_list signature: (list, pgdat, sc, stat, ignore_refs) */
-        demoted = demote_folio_list(&list, pgdat);
-
-        /* accounting from shrink */
-        sc.nr.unqueued_dirty += stat.nr_unqueued_dirty;
-        sc.nr_reclaimed += demoted;
-
-        total_evicted += demoted;
-
-        pr_info("[DEMOTE-success] demoted=%u total=%lu target=%lu scanned=%lu\n",
-                demoted, total_evicted, nr_pages, scanned);
-
-        /* 확보량 조건 만족 → 종료 */
-        if (total_evicted >= nr_pages)
-            goto out;
-
-        /* 확보량 부족 → 다시 반복 (더 시도) */
-        if (shrink_retries++ < 10) {
-            cond_resched();
-            goto retry_scan;
-        }
-    }
-
-out:
-    set_task_reclaim_state(current, NULL);
-    return total_evicted;
+    return collected;
 }
 
+static bool folio_can_demote(struct folio *folio)
+{
+    if (folio_unevictable(folio))
+        return false;
+
+    if (folio_test_writeback(folio))
+        return false;
+
+    if (folio_is_file_lru(folio) && folio_test_dirty(folio))
+        return false;
+
+    return true;
+}
+
+unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, struct list_head *ready)
+{
+    struct folio *folio, *next;
+    unsigned long nr_ready = 0;
+
+    list_for_each_entry_safe(folio, next, from, lru) {
+        int ret;
+
+        if (!folio_can_demote(folio))
+            continue;
+
+        /* active → inactive (LRU 불변식 보존) */
+        if (folio_test_active(folio))
+            folio_clear_active(folio);
+
+        ret = migrate_misplaced_folio_prepare(folio, NULL, dst_nid);
+        if (ret)
+            continue;
+
+        list_move(&folio->lru, ready);
+        nr_ready++;
+    }
+
+    return nr_ready;
+}
+
+unsigned long migrate_demote_folios(struct list_head *list,
+                                    int dst_nid)
+{
+    unsigned long nr_succeeded = 0;
+    int nr_remaining;
+
+    nr_remaining = migrate_pages(list, alloc_misplaced_dst_folio, NULL, dst_nid, MIGRATE_ASYNC, MR_DEMOTED_TIER, &nr_succeeded);
+
+    if (!list_empty(list))
+        putback_movable_pages(list);
+
+    return nr_succeeded;
+}
+
+static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
+{
+    int src_nid = 0; /* 중요 */
+    struct pglist_data *pgdat = NODE_DATA(src_nid);
+    struct lruvec *lruvec = mem_cgroup_lruvec(NULL, pgdat);
+
+    unsigned long migrated = 0;
+    int retries = 0;
+
+    while (migrated < nr_pages) {
+        LIST_HEAD(collected);
+        LIST_HEAD(ready);
+
+        unsigned long quota = nr_pages - migrated;
+        unsigned long nr_collected;
+        unsigned long nr_ready;
+        unsigned long nr_migrated;
+
+        nr_collected = collect_cold_folios_mglru(lruvec, quota, &collected);
+
+        if (!nr_collected) {
+            if (++retries > 5)
+                break;
+            cond_resched();
+            continue;
+        }
+
+        nr_ready = prepare_demote_folios(&collected, dst_nid, &ready);
+
+        if (!list_empty(&collected))
+            putback_movable_pages(&collected);
+
+        if (!nr_ready)
+            continue;
+
+        nr_migrated = migrate_demote_folios(&ready, dst_nid);
+        migrated += nr_migrated;
+
+        cond_resched();
+    }
+
+    return migrated;
+}
 
 static int demote_worker_fn(void *arg)
 {
@@ -7930,9 +7976,19 @@ static int demote_worker_fn(void *arg)
                demoted, nid);
 
         /* 완료 표시 (순서: 작업 완료 후 in_progress 클리어) */
-        atomic_set(&dn->in_progress, 0);
-    }
+        
+		if (demoted < target) 
+		{
+			long remain = target - demoted;
+			atomic_long_add(remain, &dn->target_pages);
+			atomic_set(&dn->in_progress, 1);
+			wake_up_interruptible(&dn->wq);
+			continue;
+		}
 
+		atomic_set(&dn->in_progress, 0);
+
+    }
     return 0;
 }
 
