@@ -7807,7 +7807,7 @@ static inline void init_demote_sc(struct scan_control *sc, unsigned long quota)
     sc->target_mem_cgroup = NULL;
 }
 
-unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned long quota, struct list_head *list)
+static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned long quota, struct list_head *list)
 {
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
     struct scan_control sc;
@@ -7842,7 +7842,7 @@ unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned long quo
 
 static bool folio_can_demote(struct folio *folio)
 {
-    if (folio_unevictable(folio))
+    if (!folio_evictable(folio))
         return false;
 
     if (folio_test_writeback(folio))
@@ -7854,7 +7854,7 @@ static bool folio_can_demote(struct folio *folio)
     return true;
 }
 
-unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, struct list_head *ready)
+static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, struct list_head *ready)
 {
     struct folio *folio, *next;
     unsigned long nr_ready = 0;
@@ -7880,13 +7880,13 @@ unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, struct 
     return nr_ready;
 }
 
-unsigned long migrate_demote_folios(struct list_head *list,
+static unsigned long migrate_demote_folios(struct list_head *list,
                                     int dst_nid)
 {
-    unsigned long nr_succeeded = 0;
+    unsigned int nr_succeeded = 0;
     int nr_remaining;
 
-    nr_remaining = migrate_pages(list, alloc_misplaced_dst_folio, NULL, dst_nid, MIGRATE_ASYNC, MR_DEMOTED_TIER, &nr_succeeded);
+    nr_remaining = migrate_pages(list, alloc_migrate_folio, NULL, dst_nid, MIGRATE_ASYNC, MR_KDEMOTED, &nr_succeeded);
 
     if (!list_empty(list))
         putback_movable_pages(list);
