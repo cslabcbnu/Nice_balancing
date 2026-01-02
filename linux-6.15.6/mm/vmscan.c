@@ -7807,12 +7807,65 @@ static inline void init_demote_sc(struct scan_control *sc, unsigned long quota)
     sc->target_mem_cgroup = NULL;
 }
 
+/* 1. 이 함수가 가장 먼저 정의되어야 아래 prepare 함수에서 인식합니다 */
+static bool folio_can_demote(struct folio *folio)
+{
+    /* 마이그레이션 중인 페이지 제외 */
+    if (folio_test_writeback(folio))
+        return false;
+
+    /* 0번 노드(DRAM) 페이지가 아니면 제외 */
+    if (folio_nid(folio) != 0)
+        return false;
+
+    return true;
+}
+
+/* 2. 한 배치 내의 폴리오 상태를 상세히 기록하는 함수 */
+static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, struct list_head *ready)
+{
+    struct folio *folio, *next;
+    unsigned long nr_ready = 0;
+    
+    /* 통계를 위한 카운터 */
+    int s_anon = 0, s_file = 0, s_dirty = 0, s_locked = 0, s_active = 0, s_unevict = 0;
+    int total = 0;
+
+    list_for_each_entry_safe(folio, next, from, lru) {
+        total++;
+
+        /* 상태 카운팅 */
+        if (folio_test_anon(folio)) s_anon++;
+        else s_file++;
+
+        if (folio_test_dirty(folio)) s_dirty++;
+        if (folio_test_locked(folio)) s_locked++;
+        if (folio_test_active(folio)) s_active++;
+        if (folio_test_unevictable(folio)) s_unevict++;
+
+        /* 실제 demote 가능 여부 체크 (여기서 함수 호출) */
+        if (!folio_can_demote(folio))
+            continue;
+
+        list_move(&folio->lru, ready);
+        nr_ready++;
+    }
+
+    /* 한 배치에 대한 결과 요약 출력 */
+    if (total > 0) {
+        printk(KERN_INFO "[KDEMOTE][BATCH_STATS] Total:%d | Anon:%d, File:%d | Dirty:%d, Locked:%d, Active:%d, Unevict:%d | -> Final_Ready:%lu\n",
+               total, s_anon, s_file, s_dirty, s_locked, s_active, s_unevict, nr_ready);
+    }
+
+    return nr_ready;
+}
+
+/* 3. MGLRU 수집 함수 (unused variable 경고 해결 버전) */
 static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned long quota, struct list_head *list)
 {
-    struct lru_gen_folio *lrugen = &lruvec->lrugen;
+    /* 경고가 떴던 lrugen 선언문을 삭제했습니다. isolate_folios 내부에서 어차피 lruvec을 씁니다. */
     struct scan_control sc;
     unsigned long collected = 0;
-    
     int swappiness = 200; 
 
     init_demote_sc(&sc, quota);
@@ -7826,80 +7879,20 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
         isolated = isolate_folios(lruvec, &sc, swappiness, &type, list);
 
         if (!isolated) {
-
             if (!try_to_inc_min_seq(lruvec, swappiness)) {
-
                 break;
             }
             continue;
         }
-
         collected += isolated;
-		printk(KERN_INFO "[KDEMOTE][COLLECT] done collected=%lu quota=%lu\n", collected, quota);
     }
 
     spin_unlock_irq(&lruvec->lru_lock);
-    return collected;
-}
-
-static bool folio_can_demote(struct folio *folio)
-{
-
-    if (folio_test_writeback(folio))
-        return false;
-
-    // if (folio_is_file_lru(folio) && folio_test_dirty(folio))
-    //     return false;
-	
-    return true;
-}
-
-static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, struct list_head *ready)
-{
-    struct folio *folio, *next;
-    unsigned long nr_ready = 0;
     
-    /* 통계를 위한 변수들 */
-    int stats_anon = 0;
-    int stats_file = 0;
-    int stats_dirty = 0;
-    int stats_locked = 0;
-    int stats_writeback = 0;
-    int stats_active = 0;
-    int stats_unevictable = 0;
-    int total = 0;
-
-    list_for_each_entry_safe(folio, next, from, lru) {
-        total++;
-
-        /* 1. 상태 파악 */
-        if (folio_test_anon(folio)) stats_anon++;
-        else stats_file++;
-
-        if (folio_test_dirty(folio)) stats_dirty++;
-        if (folio_test_locked(folio)) stats_locked++;
-        if (folio_test_writeback(folio)) stats_writeback++;
-        if (folio_test_active(folio)) stats_active++;
-        if (folio_test_unevictable(folio)) stats_unevictable++;
-
-        /* 2. 필터링 로직 (거절 사유가 있다면 여기서 continue) */
-        if (folio_test_writeback(folio))
-            continue;
+    if (collected > 0)
+        printk(KERN_INFO "[KDEMOTE][COLLECT] Done. collected=%lu\n", collected);
         
-        /* 0번 노드(DRAM) 페이지가 맞는지 확인 */
-        if (folio_nid(folio) != 0)
-            continue;
-
-        /* 3. 통과된 경우 준비 리스트로 이동 */
-        list_move(&folio->lru, ready);
-        nr_ready++;
-    }
-
-    /* 통계 로그 출력 */
-    printk(KERN_INFO "[KDEMOTE][STATS] Total:%d | Anon:%d, File:%d | Dirty:%d, Locked:%d, WB:%d, Active:%d, Unevict:%d | -> Prepared:%lu\n",
-           total, stats_anon, stats_file, stats_dirty, stats_locked, stats_writeback, stats_active, stats_unevictable, nr_ready);
-
-    return nr_ready;
+    return collected;
 }
 
 static unsigned long migrate_demote_folios(struct list_head *list, int dst_nid)
