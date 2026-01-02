@@ -7866,34 +7866,52 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
 {
     struct scan_control sc;
     unsigned long collected = 0;
-    int swappiness = 200; 
-    int max_retries = 10; // 리트라이 횟수 증가
+    int swappiness = 200; // Anon/File 가리지 않음
+    int max_retries = 20; // Active 세대를 다 훑기 위해 충분한 리트라이 횟수
 
     init_demote_sc(&sc, quota);
-    sc.priority = 1; // [중요] 최우선 순위로 설정하여 더 공격적으로 스캔
+
     sc.reclaim_idx = MAX_NR_ZONES - 1;
 
     spin_lock_irq(&lruvec->lru_lock);
 
     while (collected < quota && max_retries--) {
         int type;
-        int isolated = isolate_folios(lruvec, &sc, swappiness, &type, list);
+        int isolated;
 
-        if (!isolated) {
-            /* * [핵심] isolate가 0을 반환하면, 세대를 강제로 한 단계 올립니다.
-             * MGLRU에게 "지금 니가 생각하는 Hot/Cold 구분 무시하고 다음 세대로 넘겨"라고 압박하는 겁니다.
-             */
-            if (!try_to_inc_min_seq(lruvec, swappiness)) {
-                // 더 이상 넘길 세대가 없으면 아예 스캔 강제 트리거
-                lru_gen_update_size(lruvec, folio_is_file_lru(list_first_entry_or_null(list, struct folio, lru)));
-            }
+        /* 현재 세대에서 격리 시도 */
+        isolated = isolate_folios(lruvec, &sc, swappiness, &type, list);
+
+        if (isolated > 0) {
+            collected += isolated;
+            /* 갱신된 quota만큼 다시 시도 */
+            sc.nr_to_reclaim = (quota > collected) ? (quota - collected) : 0;
+            if (sc.nr_to_reclaim == 0) break;
             continue;
         }
-        collected += isolated;
+
+        /* [핵심] 격리된 게 없다면(Active만 남았다면), 강제로 세대를 전진시켜 
+           Active 페이지들을 Inactive 상태로 강제 전환(Aging)합니다. */
+        if (!try_to_inc_min_seq(lruvec, swappiness)) {
+            /* 더 이상 Aging할 수 있는 세대가 아예 없다면 중단 */
+            break;
+        }
     }
 
     spin_unlock_irq(&lruvec->lru_lock);
-    return collected;
+
+    /* 실제 리스트에 담긴 개수 확인 */
+    unsigned long actual_count = 0;
+    struct folio *f;
+    list_for_each_entry(f, list, lru) {
+        actual_count++;
+    }
+
+    if (actual_count > 0)
+        printk(KERN_INFO "[KDEMOTE_FORCE] Target:%lu, Collected:%lu, Retries_Left:%d\n", 
+               quota, actual_count, max_retries);
+
+    return actual_count;
 }
 
 /* 1. 구조체 전역 선언 제거: nid 사용을 위해 함수 내부로 이동해야 함 */
