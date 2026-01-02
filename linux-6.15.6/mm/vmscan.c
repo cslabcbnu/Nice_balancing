@@ -7987,7 +7987,7 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
             unsigned long nr_actually_migrated = migrate_demote_folios(&ready, dst_nid);
             migrated += nr_actually_migrated;
 
-			if(!list_empty(&ready)) {
+			if(!list_empty(&ready))
 				putback_movable_pages(&ready);
         }
 
