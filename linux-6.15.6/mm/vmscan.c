@@ -7803,7 +7803,7 @@ static inline void init_demote_sc(struct scan_control *sc, unsigned long quota)
     sc->priority = 0;                 /* reclaim aggressiveness 제거 */
     sc->may_unmap = 1;
     sc->may_writepage = 1;
-    sc->may_swap = 0;                 /* reclaim 의미 제거 */
+    sc->may_swap = 1;
     sc->target_mem_cgroup = NULL;
 }
 
@@ -7812,31 +7812,31 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
     struct scan_control sc;
     unsigned long collected = 0;
-    int swappiness = 0;
+    
+    int swappiness = 200; 
 
     init_demote_sc(&sc, quota);
 
     spin_lock_irq(&lruvec->lru_lock);
 
     while (collected < quota) {
-        int type = 0;
+        int type;
         int isolated;
 
         isolated = isolate_folios(lruvec, &sc, swappiness, &type, list);
 
         if (!isolated) {
-            if (!try_to_inc_min_seq(lruvec, swappiness))
-                break;
 
-            if (evictable_min_seq(lrugen->min_seq, swappiness) +
-                MIN_NR_GENS > lrugen->max_seq)
+            if (!try_to_inc_min_seq(lruvec, swappiness)) {
+
                 break;
+            }
+            continue;
         }
 
         collected += isolated;
 		printk(KERN_INFO "[KDEMOTE][COLLECT] done collected=%lu quota=%lu\n", collected, quota);
-
-	}
+    }
 
     spin_unlock_irq(&lruvec->lru_lock);
     return collected;
