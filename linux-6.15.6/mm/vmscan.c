@@ -7904,19 +7904,33 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
     return actual_in_list; // 숫자가 아니라 실제 리스트 개수를 반환하도록 수정
 }
 
-static unsigned long migrate_demote_folios(struct list_head *list, int dst_nid)
+/* 마이그레이션 대상 노드 정보를 담을 구조체 */
+struct migration_target_control mtc = {
+    .nid = dst_nid,                // 대상 노드 (CXL 노드)
+    .gfp_mask = GFP_HIGHUSER_MOVABLE | __GFP_THISNODE,
+};
+
+static unsigned long migrate_demote_folios(struct list_head *src, int dst_nid)
 {
-    unsigned int nr_succeeded = 0;
-    int nr_remaining;
+    int nr_migrated;
+    struct migration_target_control mtc = {
+        .nid = dst_nid,
+        .gfp_mask = GFP_HIGHUSER_MOVABLE | __GFP_THISNODE,
+    };
 
-    /* MIGRATE_ASYNC -> MIGRATE_SYNC_LIGHT 로 변경 (경쟁 상황에서도 좀 더 기다려줌) */
-    nr_remaining = migrate_pages(list, alloc_migrate_folio, NULL, 
-                                dst_nid, MIGRATE_SYNC_LIGHT, MR_KDEMOTED, &nr_succeeded);
+    /* * [핵심 수정] migrate_pages의 인자:
+     * 1. 소스 리스트
+     * 2. 새 페이지를 할당할 콜백 함수 (alloc_migration_target)
+     * 3. 콜백 함수에 전달할 데이터 (&mtc)
+     * 4. ... 기타 인자들 (버전에 따라 개수 확인 필요)
+     */
+    nr_migrated = migrate_pages(src, alloc_migration_target, NULL, (unsigned long)&mtc,
+                               MIGRATE_ASYNC, MR_DEMOTION, NULL);
 
-    if (!list_empty(list))
-        putback_movable_pages(list);
+    if (nr_migrated < 0)
+        return 0;
 
-    return (unsigned long)nr_succeeded;
+    return nr_migrated;
 }
 
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
