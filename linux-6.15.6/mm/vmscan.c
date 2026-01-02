@@ -7868,26 +7868,21 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
     int swappiness = 200; 
 
     init_demote_sc(&sc, quota);
+    /* [추가] 중요: 모든 존(Zone)에서 페이지를 가져올 수 있게 인덱스 최대화 */
+    sc.reclaim_idx = MAX_NR_ZONES - 1;
 
     spin_lock_irq(&lruvec->lru_lock);
-    
-    /* [수정] MGLRU seq 접근 방식 변경: 
-     * MGLRU는 [0]이 Anon, [1]이 File인 구조를 가집니다. 
-     * 에러 방지를 위해 READ_ONCE와 올바른 인덱스를 사용합니다. */
-    // printk(KERN_INFO "[KDEMOTE_MGLRU] min_seq[0]=%lu, max_seq=%lu\n", 
-    //        lruvec->lrugen.min_seq[0], lruvec->lrugen.max_seq);
 
     while (collected < quota) {
         int type;
         int isolated;
 
+        /* MGLRU의 isolate_folios는 실제로 리스트에 넣은 개수를 반환해야 함 */
         isolated = isolate_folios(lruvec, &sc, swappiness, &type, list);
 
         if (!isolated) {
-            /* try_to_inc_min_seq가 false를 리턴하면 더 이상 긁어올 세대가 없다는 뜻입니다. */
-            if (!try_to_inc_min_seq(lruvec, swappiness)) {
-                break; 
-            }
+            if (!try_to_inc_min_seq(lruvec, swappiness))
+                break;
             continue;
         }
         collected += isolated;
@@ -7895,10 +7890,18 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
 
     spin_unlock_irq(&lruvec->lru_lock);
     
+    /* [검증 로그] 실제로 리스트에 몇 개가 들어있는지 직접 셉니다 */
+    unsigned long actual_in_list = 0;
+    struct folio *f;
+    list_for_each_entry(f, list, lru) {
+        actual_in_list++;
+    }
+
     if (collected > 0)
-        printk(KERN_INFO "[KDEMOTE][COLLECT] Done. collected=%lu\n", collected);
+        printk(KERN_INFO "[KDEMOTE_VERIFY] Reported:%lu, Actual_List_Count:%lu\n", 
+               collected, actual_in_list);
         
-    return collected;
+    return actual_in_list; // 숫자가 아니라 실제 리스트 개수를 반환하도록 수정
 }
 
 static unsigned long migrate_demote_folios(struct list_head *list, int dst_nid)
