@@ -7872,6 +7872,10 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
 
     spin_lock_irq(&lruvec->lru_lock);
 
+	/* MGLRU 세대(Generation) 정보 확인 로그 */
+    printk(KERN_INFO "[KDEMOTE_MGLRU] min_seq=%lu, max_seq=%lu\n", 
+            lruvec->lrugen.min_seq[0], lruvec->lrugen.max_seq[0]);
+
     while (collected < quota) {
         int type;
         int isolated;
@@ -7914,9 +7918,12 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 {
     int src_nid = 0; 
     struct pglist_data *pgdat = NODE_DATA(src_nid);
-    struct lruvec *lruvec = mem_cgroup_lruvec(NULL, pgdat);
+    struct lruvec *lruvec = &pgdat->__lruvec;
     unsigned long migrated = 0;
     int retries = 0;
+
+	printk(KERN_INFO "[KDEMOTE_TRACE] Entering try_to_demote (target:%lu, lruvec:%p)\n", 
+           nr_pages, lruvec);
 
     /* [추가] LRU 리스트에서 folio를 가져오기 전에 
        현재 CPU의 배치를 비워 리스트를 최신화합니다. */
