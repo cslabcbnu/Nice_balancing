@@ -7923,7 +7923,7 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
     
     /* [가장 중요] mem_cgroup_lruvec 대신 노드의 기본 lruvec을 직접 참조합니다. 
      * 이전 로그에서 루프를 아예 안 돌았던 원인은 lruvec 주소가 꼬였기 때문일 확률이 큽니다. */
-    struct lruvec *lruvec = &pgdat->lruvec; 
+    struct lruvec *lruvec = &pgdat->__lruvec; 
     
     unsigned long migrated = 0;
     int retries = 0;
