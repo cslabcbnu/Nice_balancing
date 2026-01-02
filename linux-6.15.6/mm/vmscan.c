@@ -7800,11 +7800,12 @@ static inline void init_demote_sc(struct scan_control *sc, unsigned long quota)
 
     sc->nr_to_reclaim = quota;        /* isolate loop bound */
     sc->gfp_mask = GFP_HIGHUSER_MOVABLE;
-    sc->priority = 0;                 /* reclaim aggressiveness 제거 */
+    sc->priority = 1;                 /* reclaim aggressiveness 제거 */
     sc->may_unmap = 1;
     sc->may_writepage = 1;
     sc->may_swap = 1;
     sc->target_mem_cgroup = NULL;
+	
 }
 
 /* 1. 이 함수가 가장 먼저 정의되어야 아래 prepare 함수에서 인식합니다 */
@@ -7866,42 +7867,33 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
     struct scan_control sc;
     unsigned long collected = 0;
     int swappiness = 200; 
+    int max_retries = 10; // 리트라이 횟수 증가
 
     init_demote_sc(&sc, quota);
-    /* [추가] 중요: 모든 존(Zone)에서 페이지를 가져올 수 있게 인덱스 최대화 */
+    sc.priority = 1; // [중요] 최우선 순위로 설정하여 더 공격적으로 스캔
     sc.reclaim_idx = MAX_NR_ZONES - 1;
 
     spin_lock_irq(&lruvec->lru_lock);
 
-    while (collected < quota) {
+    while (collected < quota && max_retries--) {
         int type;
-        int isolated;
-
-        /* MGLRU의 isolate_folios는 실제로 리스트에 넣은 개수를 반환해야 함 */
-        isolated = isolate_folios(lruvec, &sc, swappiness, &type, list);
+        int isolated = isolate_folios(lruvec, &sc, swappiness, &type, list);
 
         if (!isolated) {
-            if (!try_to_inc_min_seq(lruvec, swappiness))
-                break;
+            /* * [핵심] isolate가 0을 반환하면, 세대를 강제로 한 단계 올립니다.
+             * MGLRU에게 "지금 니가 생각하는 Hot/Cold 구분 무시하고 다음 세대로 넘겨"라고 압박하는 겁니다.
+             */
+            if (!try_to_inc_min_seq(lruvec, swappiness)) {
+                // 더 이상 넘길 세대가 없으면 아예 스캔 강제 트리거
+                lru_gen_update_size(lruvec, folio_is_file_lru(list_first_entry_or_null(list, struct folio, lru)));
+            }
             continue;
         }
         collected += isolated;
     }
 
     spin_unlock_irq(&lruvec->lru_lock);
-    
-    /* [검증 로그] 실제로 리스트에 몇 개가 들어있는지 직접 셉니다 */
-    unsigned long actual_in_list = 0;
-    struct folio *f;
-    list_for_each_entry(f, list, lru) {
-        actual_in_list++;
-    }
-
-    if (collected > 0)
-        printk(KERN_INFO "[KDEMOTE_VERIFY] Reported:%lu, Actual_List_Count:%lu\n", 
-               collected, actual_in_list);
-        
-    return actual_in_list; // 숫자가 아니라 실제 리스트 개수를 반환하도록 수정
+    return collected;
 }
 
 /* 1. 구조체 전역 선언 제거: nid 사용을 위해 함수 내부로 이동해야 함 */
