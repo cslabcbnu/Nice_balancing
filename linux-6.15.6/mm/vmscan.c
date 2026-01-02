@@ -7980,7 +7980,6 @@ static int demote_worker_fn(void *arg)
 /* 초기화 함수 */
 static int __init knicedemoted_init(void)
 {
-    int nid;
     int src_node = 0; // DRAM 노드
 
     // 우선 0번 노드 하나에 대해서만 초기화 수행
