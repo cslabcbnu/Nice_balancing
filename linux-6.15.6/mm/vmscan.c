@@ -7858,79 +7858,119 @@ static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, 
 {
     struct folio *folio, *next;
     unsigned long nr_ready = 0;
+    
+    /* 통계를 위한 변수들 */
+    int stats_anon = 0;
+    int stats_file = 0;
+    int stats_dirty = 0;
+    int stats_locked = 0;
+    int stats_writeback = 0;
+    int stats_active = 0;
+    int stats_unevictable = 0;
+    int total = 0;
 
     list_for_each_entry_safe(folio, next, from, lru) {
+        total++;
 
-        if (!folio_can_demote(folio))
+        /* 1. 상태 파악 */
+        if (folio_test_anon(folio)) stats_anon++;
+        else stats_file++;
+
+        if (folio_test_dirty(folio)) stats_dirty++;
+        if (folio_test_locked(folio)) stats_locked++;
+        if (folio_test_writeback(folio)) stats_writeback++;
+        if (folio_test_active(folio)) stats_active++;
+        if (folio_test_unevictable(folio)) stats_unevictable++;
+
+        /* 2. 필터링 로직 (거절 사유가 있다면 여기서 continue) */
+        if (folio_test_writeback(folio))
+            continue;
+        
+        /* 0번 노드(DRAM) 페이지가 맞는지 확인 */
+        if (folio_nid(folio) != 0)
             continue;
 
+        /* 3. 통과된 경우 준비 리스트로 이동 */
         list_move(&folio->lru, ready);
         nr_ready++;
     }
 
-	printk(KERN_INFO "[KDEMOTE][PREP] prepared=%lu\n", nr_ready);
+    /* 통계 로그 출력 */
+    printk(KERN_INFO "[KDEMOTE][STATS] Total:%d | Anon:%d, File:%d | Dirty:%d, Locked:%d, WB:%d, Active:%d, Unevict:%d | -> Prepared:%lu\n",
+           total, stats_anon, stats_file, stats_dirty, stats_locked, stats_writeback, stats_active, stats_unevictable, nr_ready);
 
     return nr_ready;
 }
 
-static unsigned long migrate_demote_folios(struct list_head *list,
-                                    int dst_nid)
+static unsigned long migrate_demote_folios(struct list_head *list, int dst_nid)
 {
     unsigned int nr_succeeded = 0;
     int nr_remaining;
 
-    nr_remaining = migrate_pages(list, alloc_migrate_folio, NULL, dst_nid, MIGRATE_ASYNC, MR_KDEMOTED, &nr_succeeded);
+    /* MIGRATE_ASYNC -> MIGRATE_SYNC_LIGHT 로 변경 (경쟁 상황에서도 좀 더 기다려줌) */
+    nr_remaining = migrate_pages(list, alloc_migrate_folio, NULL, 
+                                dst_nid, MIGRATE_SYNC_LIGHT, MR_KDEMOTED, &nr_succeeded);
 
     if (!list_empty(list))
         putback_movable_pages(list);
 
-	printk(KERN_INFO "[KDEMOTE][MIGRATE] succeeded=%u remaining=%d\n", nr_succeeded, nr_remaining);
-    return nr_succeeded;
+    return (unsigned long)nr_succeeded;
 }
 
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 {
-    int src_nid = 0; /* 중요 */
+    int src_nid = 0; 
     struct pglist_data *pgdat = NODE_DATA(src_nid);
     struct lruvec *lruvec = mem_cgroup_lruvec(NULL, pgdat);
-
     unsigned long migrated = 0;
     int retries = 0;
+
+    /* [추가] LRU 리스트에서 folio를 가져오기 전에 
+       현재 CPU의 배치를 비워 리스트를 최신화합니다. */
+    lru_add_drain_all();
 
     while (migrated < nr_pages) {
         LIST_HEAD(collected);
         LIST_HEAD(ready);
-
         unsigned long quota = nr_pages - migrated;
         unsigned long nr_collected;
         unsigned long nr_ready;
         unsigned long nr_migrated;
+        int list_count = 0;
+        struct folio *f;
 
         nr_collected = collect_cold_folios_mglru(lruvec, quota, &collected);
 
-        if (!nr_collected) {
-            if (++retries > 5)
-                break;
+        /* [검증] 실제 리스트에 담긴 개수 확인 */
+        list_for_each_entry(f, &collected, lru) {
+            list_count++;
+        }
+
+        if (list_count == 0) {
+            if (++retries > 5) break;
             cond_resched();
             continue;
         }
 
+        printk(KERN_INFO "[KDEMOTE] collect_ret=%lu, actual_list_size=%d\n", 
+               nr_collected, list_count);
+
         nr_ready = prepare_demote_folios(&collected, dst_nid, &ready);
 
+        /* 준비되지 않은 페이지는 원래 리스트로 복구 */
         if (!list_empty(&collected))
             putback_movable_pages(&collected);
 
-        if (!nr_ready)
+        if (!nr_ready) {
+            if (++retries > 5) break;
             continue;
+        }
 
         nr_migrated = migrate_demote_folios(&ready, dst_nid);
         migrated += nr_migrated;
 
         cond_resched();
-
-		pr_info("[DEMOTE] migrated=%lu\n", nr_migrated);
     }
-
     return migrated;
 }
 
