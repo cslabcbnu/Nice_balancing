@@ -7904,33 +7904,39 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
     return actual_in_list; // 숫자가 아니라 실제 리스트 개수를 반환하도록 수정
 }
 
-/* 마이그레이션 대상 노드 정보를 담을 구조체 */
-struct migration_target_control mtc = {
-    .nid = dst_nid,                // 대상 노드 (CXL 노드)
-    .gfp_mask = GFP_HIGHUSER_MOVABLE | __GFP_THISNODE,
-};
+/* 1. 구조체 전역 선언 제거: nid 사용을 위해 함수 내부로 이동해야 함 */
 
 static unsigned long migrate_demote_folios(struct list_head *src, int dst_nid)
 {
-    int nr_migrated;
+    int nr_failed;
+    unsigned long nr_before;
+    struct folio *f;
     struct migration_target_control mtc = {
         .nid = dst_nid,
         .gfp_mask = GFP_HIGHUSER_MOVABLE | __GFP_THISNODE,
     };
 
-    /* * [핵심 수정] migrate_pages의 인자:
-     * 1. 소스 리스트
-     * 2. 새 페이지를 할당할 콜백 함수 (alloc_migration_target)
-     * 3. 콜백 함수에 전달할 데이터 (&mtc)
-     * 4. ... 기타 인자들 (버전에 따라 개수 확인 필요)
-     */
-    nr_migrated = migrate_pages(src, alloc_migration_target, NULL, (unsigned long)&mtc,
-                               MIGRATE_ASYNC, MR_DEMOTION, NULL);
-
-    if (nr_migrated < 0)
+    if (list_empty(src))
         return 0;
 
-    return nr_migrated;
+    /* 1. 시도 전 개수 파악 */
+    nr_before = 0;
+    list_for_each_entry(f, src, lru) {
+        nr_before++;
+    }
+
+    /* 2. 마이그레이션 실행 */
+    nr_failed = migrate_pages(src, alloc_migration_target, NULL, (unsigned long)&mtc,
+                               MIGRATE_ASYNC, MR_DEMOTION, NULL);
+
+    /* 3. 에러 처리 */
+    if (nr_failed < 0) {
+        printk(KERN_ERR "[KDEMOTE_ERR] migrate_pages failed with %d\n", nr_failed);
+        return 0;
+    }
+
+    /* 4. [중요] 성공 개수 계산: 전체 - 실패 */
+    return (nr_before - (unsigned long)nr_failed);
 }
 
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
@@ -7978,8 +7984,11 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
             putback_movable_pages(&collected);
 
         if (nr_ready > 0) {
-            unsigned long nr_migrated = migrate_demote_folios(&ready, dst_nid);
-            migrated += nr_migrated;
+            unsigned long nr_actually_migrated = migrate_demote_folios(&ready, dst_nid);
+            migrated += nr_actually_migrated;
+
+			if(!list_empty(&ready)) {
+				putback_movable_pages(&ready);
         }
 
         cond_resched();
