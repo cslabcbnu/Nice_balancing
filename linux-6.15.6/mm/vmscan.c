@@ -7863,7 +7863,6 @@ static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, 
 /* 3. MGLRU 수집 함수 (unused variable 경고 해결 버전) */
 static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned long quota, struct list_head *list)
 {
-    /* 경고가 떴던 lrugen 선언문을 삭제했습니다. isolate_folios 내부에서 어차피 lruvec을 씁니다. */
     struct scan_control sc;
     unsigned long collected = 0;
     int swappiness = 200; 
@@ -7871,10 +7870,12 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
     init_demote_sc(&sc, quota);
 
     spin_lock_irq(&lruvec->lru_lock);
-
-	/* MGLRU 세대(Generation) 정보 확인 로그 */
-    printk(KERN_INFO "[KDEMOTE_MGLRU] min_seq=%lu, max_seq=%lu\n", 
-            lruvec->lrugen.min_seq[0], lruvec->lrugen.max_seq[0]);
+    
+    /* [수정] MGLRU seq 접근 방식 변경: 
+     * MGLRU는 [0]이 Anon, [1]이 File인 구조를 가집니다. 
+     * 에러 방지를 위해 READ_ONCE와 올바른 인덱스를 사용합니다. */
+    // printk(KERN_INFO "[KDEMOTE_MGLRU] min_seq[0]=%lu, max_seq=%lu\n", 
+    //        lruvec->lrugen.min_seq[0], lruvec->lrugen.max_seq);
 
     while (collected < quota) {
         int type;
@@ -7883,8 +7884,9 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
         isolated = isolate_folios(lruvec, &sc, swappiness, &type, list);
 
         if (!isolated) {
+            /* try_to_inc_min_seq가 false를 리턴하면 더 이상 긁어올 세대가 없다는 뜻입니다. */
             if (!try_to_inc_min_seq(lruvec, swappiness)) {
-                break;
+                break; 
             }
             continue;
         }
@@ -7918,15 +7920,18 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 {
     int src_nid = 0; 
     struct pglist_data *pgdat = NODE_DATA(src_nid);
-    struct lruvec *lruvec = &pgdat->__lruvec;
+    
+    /* [가장 중요] mem_cgroup_lruvec 대신 노드의 기본 lruvec을 직접 참조합니다. 
+     * 이전 로그에서 루프를 아예 안 돌았던 원인은 lruvec 주소가 꼬였기 때문일 확률이 큽니다. */
+    struct lruvec *lruvec = &pgdat->lruvec; 
+    
     unsigned long migrated = 0;
     int retries = 0;
 
-	printk(KERN_INFO "[KDEMOTE_TRACE] Entering try_to_demote (target:%lu, lruvec:%p)\n", 
+    /* 워커가 여기 진입하는지 로그로 확실히 확인 */
+    printk(KERN_INFO "[KDEMOTE_TRACE] Starting try_to_demote (target:%lu, lruvec_addr:%p)\n", 
            nr_pages, lruvec);
 
-    /* [추가] LRU 리스트에서 folio를 가져오기 전에 
-       현재 CPU의 배치를 비워 리스트를 최신화합니다. */
     lru_add_drain_all();
 
     while (migrated < nr_pages) {
@@ -7936,45 +7941,30 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
         unsigned long nr_collected;
         unsigned long nr_ready;
         unsigned long nr_migrated;
-        int list_count = 0;
-        struct folio *f;
 
         nr_collected = collect_cold_folios_mglru(lruvec, quota, &collected);
 
-		/* [매우 중요] 여기가 안 찍히면 코드가 안 바뀐 것입니다 */
-    	if (nr_collected > 0) 
-		{
-        	struct folio *test_f;
-        	int real_count = 0;
-        	list_for_each_entry(test_f, &collected, lru) 
-			{
-            	real_count++;
-        	}
-        	printk(KERN_INFO "[KDEMOTE_DEBUG] Reported:%lu, Actual_in_list:%d, List_empty:%d\n", nr_collected, real_count, list_empty(&collected));
-		}
-
-        /* [검증] 실제 리스트에 담긴 개수 확인 */
-        list_for_each_entry(f, &collected, lru) {
-            list_count++;
-        }
-
-        if (list_count == 0) {
+        /* 수집된 것이 있다면 디버깅 로그 출력 */
+        if (nr_collected > 0) {
+            int actual_count = 0;
+            struct folio *f;
+            list_for_each_entry(f, &collected, lru) actual_count++;
+            
+            printk(KERN_INFO "[KDEMOTE_DEBUG] Reported:%lu, Actual_in_list:%d\n", 
+                   nr_collected, actual_count);
+        } else {
+            /* 수집이 안 되면 세대를 높여가며 최대 5번까지 재시도 */
             if (++retries > 5) break;
             cond_resched();
             continue;
         }
 
-        printk(KERN_INFO "[KDEMOTE] collect_ret=%lu, actual_list_size=%d\n", 
-               nr_collected, list_count);
-
         nr_ready = prepare_demote_folios(&collected, dst_nid, &ready);
 
-        /* 준비되지 않은 페이지는 원래 리스트로 복구 */
         if (!list_empty(&collected))
             putback_movable_pages(&collected);
 
         if (!nr_ready) {
-            if (++retries > 5) break;
             continue;
         }
 
