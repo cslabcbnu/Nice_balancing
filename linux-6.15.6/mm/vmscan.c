@@ -7848,8 +7848,8 @@ static bool folio_can_demote(struct folio *folio)
     if (folio_test_writeback(folio))
         return false;
 
-    if (folio_is_file_lru(folio) && folio_test_dirty(folio))
-        return false;
+    // if (folio_is_file_lru(folio) && folio_test_dirty(folio))
+    //     return false;
 	
     return true;
 }
@@ -7937,53 +7937,42 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 static int demote_worker_fn(void *arg)
 {
     set_user_nice(current, -1);
-    int nid = (int)(unsigned long)arg;
-    struct demote_node *dn = &demote_nodes[nid];
+    int src_nid = (int)(unsigned long)arg; // 이 워커가 담당하는 소스 노드 (0번)
+    struct demote_node *dn = &demote_nodes[src_nid];
     long demoted;
+    
+    /* * 목적지 노드 결정 
+     * 시스템에서 1번 노드가 CXL(Low Tier)이므로 1로 설정합니다.
+     */
+    int dst_nid = 1; 
 
     allow_signal(SIGKILL);
 
     while (!kthread_should_stop()) {
         long target;
 
-        /* sleep until work is queued */
         wait_event_interruptible(dn->wq,
             atomic_read(&dn->in_progress) || kthread_should_stop());
 
         if (kthread_should_stop())
             break;
 
-        /* 실제 target 가져오기 (atomically exchange) */
         target = atomic_long_xchg(&dn->target_pages, 0);
         if (target <= 0) {
-            /* nothing to do: clear in_progress and continue */
             atomic_set(&dn->in_progress, 0);
             continue;
         }
 
-        /* 워커가 '일하는 중' 상태 */
-        printk(KERN_INFO "[DEMOTE-WORKER] Starting demote of %ld pages on nid %d\n",
-               target, nid);
+        // 목적지를 dst_nid(1번 노드)로 명시하여 호출
+        printk(KERN_INFO "[DEMOTE-WORKER] Starting demote from %d to %d (target: %ld pages)\n",
+               src_nid, dst_nid, target);
 
-        /* demote 수행 */
-        demoted = try_to_demote_pages(target, nid);
+        demoted = try_to_demote_pages(target, dst_nid);
 
-        printk(KERN_INFO "[DEMOTE-WORKER] Finished demote %ld on nid %d\n",
-               demoted, nid);
+        printk(KERN_INFO "[DEMOTE-WORKER] Finished demote %ld pages to node %d\n",
+               demoted, dst_nid);
 
-        /* 완료 표시 (순서: 작업 완료 후 in_progress 클리어) */
-        
-		// if (demoted < target) 
-		// {
-		// 	long remain = target - demoted;
-		// 	atomic_long_add(remain, &dn->target_pages);
-		// 	atomic_set(&dn->in_progress, 1);
-		// 	wake_up_interruptible(&dn->wq);
-		// 	continue;
-		// }
-
-		atomic_set(&dn->in_progress, 0);
-
+        atomic_set(&dn->in_progress, 0);
     }
     return 0;
 }
@@ -7992,22 +7981,25 @@ static int demote_worker_fn(void *arg)
 static int __init knicedemoted_init(void)
 {
     int nid;
+    int src_node = 0; // DRAM 노드
 
-    for (nid = 0; nid < 1; nid++) {
-        atomic_set(&demote_nodes[nid].in_progress, 0);
-        atomic_long_set(&demote_nodes[nid].target_pages, 0);
-        atomic_long_set(&demote_nodes[nid].demoted_pages, 0);
-        init_waitqueue_head(&demote_nodes[nid].wq);
-        spin_lock_init(&demote_nodes[nid].lock);
+    // 우선 0번 노드 하나에 대해서만 초기화 수행
+    atomic_set(&demote_nodes[src_node].in_progress, 0);
+    atomic_long_set(&demote_nodes[src_node].target_pages, 0);
+    atomic_long_set(&demote_nodes[src_node].demoted_pages, 0);
+    init_waitqueue_head(&demote_nodes[src_node].wq);
+    spin_lock_init(&demote_nodes[src_node].lock);
 
-        struct task_struct *task;
-        task = kthread_run(demote_worker_fn, (void *)(unsigned long)nid,
-                           "knicedemoted/%d", nid);
-        if (IS_ERR(task))
-            pr_err("knicedemoted: failed to start worker for node %d\n", nid);
+    struct task_struct *task;
+    task = kthread_run(demote_worker_fn, (void *)(unsigned long)src_node,
+                       "knicedemoted/%d", src_node);
+    
+    if (IS_ERR(task)) {
+        pr_err("knicedemoted: failed to start worker for node %d\n", src_node);
+        return PTR_ERR(task);
     }
 
-    pr_info("knicedemoted: all workers initialized\n");
+    pr_info("knicedemoted: worker for node %d initialized (Target: Node 1)\n", src_node);
     return 0;
 }
 late_initcall(knicedemoted_init);
