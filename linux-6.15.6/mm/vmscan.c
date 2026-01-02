@@ -7921,15 +7921,16 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
     int src_nid = 0; 
     struct pglist_data *pgdat = NODE_DATA(src_nid);
     
-    /* [가장 중요] mem_cgroup_lruvec 대신 노드의 기본 lruvec을 직접 참조합니다. 
-     * 이전 로그에서 루프를 아예 안 돌았던 원인은 lruvec 주소가 꼬였기 때문일 확률이 큽니다. */
-    struct lruvec *lruvec = &pgdat->__lruvec; 
+    /* * [패닉 방지 핵심] 
+     * &pgdat->lruvec을 직접 쓰지 말고, mem_cgroup_lruvec을 통해 
+     * root_mem_cgroup(모든 페이지의 조상)과 연결된 lruvec을 가져옵니다. 
+     */
+    struct lruvec *lruvec = mem_cgroup_lruvec(root_mem_cgroup, pgdat); 
     
     unsigned long migrated = 0;
     int retries = 0;
 
-    /* 워커가 여기 진입하는지 로그로 확실히 확인 */
-    printk(KERN_INFO "[KDEMOTE_TRACE] Starting try_to_demote (target:%lu, lruvec_addr:%p)\n", 
+    printk(KERN_INFO "[KDEMOTE_TRACE] Starting try_to_demote (target:%lu, lruvec:%p)\n", 
            nr_pages, lruvec);
 
     lru_add_drain_all();
@@ -7939,37 +7940,30 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
         LIST_HEAD(ready);
         unsigned long quota = nr_pages - migrated;
         unsigned long nr_collected;
-        unsigned long nr_ready;
-        unsigned long nr_migrated;
 
+        /* MGLRU 엔진 가동 */
         nr_collected = collect_cold_folios_mglru(lruvec, quota, &collected);
 
-        /* 수집된 것이 있다면 디버깅 로그 출력 */
-        if (nr_collected > 0) {
-            int actual_count = 0;
-            struct folio *f;
-            list_for_each_entry(f, &collected, lru) actual_count++;
-            
-            printk(KERN_INFO "[KDEMOTE_DEBUG] Reported:%lu, Actual_in_list:%d\n", 
-                   nr_collected, actual_count);
-        } else {
-            /* 수집이 안 되면 세대를 높여가며 최대 5번까지 재시도 */
-            if (++retries > 5) break;
+        if (nr_collected == 0) {
+            /* * 내릴 페이지가 없다면 세대를 강제로 넘기거나(aging), 
+             * 잠시 쉬었다가 다시 시도합니다.
+             */
+            if (++retries > 3) break;
             cond_resched();
             continue;
         }
 
-        nr_ready = prepare_demote_folios(&collected, dst_nid, &ready);
+        /* 통계 및 준비 */
+        unsigned long nr_ready = prepare_demote_folios(&collected, dst_nid, &ready);
 
+        /* 남은 건 원래대로 (MGLRU 리스트로 복귀) */
         if (!list_empty(&collected))
             putback_movable_pages(&collected);
 
-        if (!nr_ready) {
-            continue;
+        if (nr_ready > 0) {
+            unsigned long nr_migrated = migrate_demote_folios(&ready, dst_nid);
+            migrated += nr_migrated;
         }
-
-        nr_migrated = migrate_demote_folios(&ready, dst_nid);
-        migrated += nr_migrated;
 
         cond_resched();
     }
