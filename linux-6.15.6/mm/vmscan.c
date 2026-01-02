@@ -7934,6 +7934,18 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 
         nr_collected = collect_cold_folios_mglru(lruvec, quota, &collected);
 
+		/* [매우 중요] 여기가 안 찍히면 코드가 안 바뀐 것입니다 */
+    	if (nr_collected > 0) 
+		{
+        	struct folio *test_f;
+        	int real_count = 0;
+        	list_for_each_entry(test_f, &collected, lru) 
+			{
+            	real_count++;
+        	}
+        	printk(KERN_INFO "[KDEMOTE_DEBUG] Reported:%lu, Actual_in_list:%d, List_empty:%d\n", nr_collected, real_count, list_empty(&collected));
+		}
+
         /* [검증] 실제 리스트에 담긴 개수 확인 */
         list_for_each_entry(f, &collected, lru) {
             list_count++;
