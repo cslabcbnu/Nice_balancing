@@ -7923,21 +7923,26 @@ static unsigned long migrate_demote_folios_knice(struct list_head *src, int dst_
 }
 
 /* 5. 메인 로직 */
+/* mm/vmscan.c 하단 수정 */
+
 static unsigned long try_to_demote_pages_knice(unsigned long nr_pages, int dst_nid)
 {
     struct pglist_data *pgdat = NODE_DATA(0);
     struct lruvec *lruvec = mem_cgroup_lruvec(root_mem_cgroup, pgdat); 
     unsigned long migrated = 0;
+    int retry = 10; // 무한 루프 방지
 
     lru_add_drain_all();
 
-    while (migrated < nr_pages) {
+    while (migrated < nr_pages && retry > 0) {
         LIST_HEAD(collected);
         LIST_HEAD(ready);
-        unsigned long quota = nr_pages - migrated;
+        unsigned long quota = (nr_pages - migrated > 512) ? 512 : (nr_pages - migrated); // 한 번에 2MB씩 끊어서 처리
 
-        if (collect_cold_folios_mglru(lruvec, quota, &collected) == 0)
-            break;
+        if (collect_cold_folios_mglru(lruvec, quota, &collected) == 0) {
+            retry--;
+            continue;
+        }
 
         unsigned long nr_ready = prepare_demote_ready_list(&collected, &ready);
 
@@ -7949,33 +7954,44 @@ static unsigned long try_to_demote_pages_knice(unsigned long nr_pages, int dst_n
             if (!list_empty(&ready))
                 putback_movable_pages(&ready);
         }
-        cond_resched();
+        
+        /* 중요: 다른 커널 태스크에게 CPU 양보 */
+        cond_resched(); 
     }
     return migrated;
 }
 
-/* 6. 워커 스레드 */
 static int demote_worker_fn(void *arg)
 {
     int src_nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[src_nid];
-    int dst_nid = 1; // CXL Node
+    int dst_nid = 1;
 
-    set_user_nice(current, -20); // 가장 높은 우선순위
+    /* 우선순위를 -5 정도로 완화 (시스템 마비 방지) */
+    set_user_nice(current, -5); 
 
     while (!kthread_should_stop()) {
         long target;
 
+        /* wait_event가 스핀락을 내부적으로 관리함 */
         wait_event_interruptible(dn->wq,
             atomic_read(&dn->in_progress) || kthread_should_stop());
 
         if (kthread_should_stop()) break;
 
+        /* 락을 잡지 않은 상태에서 target_pages만 원자적으로 가져옴 */
         target = atomic_long_xchg(&dn->target_pages, 0);
+        
         if (target > 0) {
+            /* 실제 마이그레이션 수행 */
             try_to_demote_pages_knice(target, dst_nid);
         }
+
+        /* 완료 후 플래그 해제 */
         atomic_set(&dn->in_progress, 0);
+        
+        /* 다시 대기하기 전 CPU 양보 */
+        cond_resched();
     }
     return 0;
 }

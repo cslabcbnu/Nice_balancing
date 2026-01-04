@@ -370,58 +370,41 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	if (!len)
 		return -EINVAL;
 
-	if (demote_enabled && len > 0) {
-		int nice_val = task_nice(current);
-		unsigned long nr_pages = len >> PAGE_SHIFT;
-		struct demote_node *dn = &demote_nodes[DRAM_NODE_ID];
+	if (demote_enabled && len > 0) 
+	{
+    	int nice_val = task_nice(current);
+    	unsigned long nr_pages = len >> PAGE_SHIFT;
+    	struct demote_node *dn = &demote_nodes[DRAM_NODE_ID];
 
-		/*
-		* nice < 0 : DRAM 우선 사용자 → DRAM 확보를 위해 demote 요청
-		*/
-		if (nice_val < 0) {
-			spin_lock(&dn->lock);
+    	if (nice_val < 0) 
+		{
+        /* 1. 이미 진행 중인지 원자적으로 체크 및 큐잉 */
+        	if (atomic_read(&dn->in_progress)) 
+			{
+            	atomic_long_add(nr_pages, &dn->target_pages);
+            /* printk는 가급적 짧게, 혹은 디버깅 시에만 사용 */
+        	}
+			else 
+			{
+            /* 2. 새로운 작업 설정 */
+            	atomic_set(&dn->in_progress, 1);
+            	atomic_long_set(&dn->target_pages, nr_pages);
+            	dn->owner_pid = current->pid;
 
-			if (atomic_read(&dn->in_progress)) {
-				/* 워커가 이미 동작 중 → 추가 요청 누적 */
-				atomic_long_add(nr_pages, &dn->target_pages);
-
-				printk(KERN_INFO
-					"[NICE-BALANCING] do_mmap: appended %lu pages (total now %ld) for demote (nice=%d)\n",
-					nr_pages,
-					atomic_long_read(&dn->target_pages),
-					nice_val);
-
-			} else {
-				/* 새로운 작업 요청 시작 */
-				atomic_set(&dn->in_progress, 1);
-				atomic_long_set(&dn->target_pages, nr_pages);
-
-				dn->owner_pid = current->pid;
-
-				printk(KERN_INFO
-					"[NICE-BALANCING] do_mmap: queued %lu pages for demote (nice=%d)\n",
-					nr_pages, nice_val);
-
-				/* 워커 깨움 */
-				wake_up_interruptible(&dn->wq);
-			}
-
-			spin_unlock(&dn->lock);
-
-		} else {
-			/*
-			* nice >= 0 : DRAM 비우는 중이면 이 프로세스의 신규 mmap은 CXL에서 할당
-			* 즉, “DRAM 비우는 동안에는 DRAM 경쟁 낮음”
-			*/
-			if (atomic_read(&dn->in_progress)) {
-
-				/* 이미 prior_alloc 노드를 DRAM → CXL로 전환 */
-				set_preferred_node_for_current(CXL_NODE_ID);
-
-				printk(KERN_INFO
-					"[NICE-BALANCING] do_mmap: nice >=0, DRAM demote in progress → forcing CXL allocation\n");
-			}
-		}
+            /* 3. 락이 없는 상태에서 워커 깨움 (안전) */
+            	wake_up_interruptible(&dn->wq);
+            
+            	printk(KERN_INFO "[NICE-BALANCING] do_mmap: queued %lu pages for demote\n", nr_pages);
+        	}
+    	} 
+		else 
+		{
+        	/* nice >= 0 인 경우의 로직 */
+        	if (atomic_read(&dn->in_progress)) 
+			{
+            set_preferred_node_for_current(CXL_NODE_ID);
+        	}
+    	}
 	}
 	
 	/*
