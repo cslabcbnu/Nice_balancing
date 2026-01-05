@@ -3537,7 +3537,6 @@ static inline unsigned int gfp_to_alloc_flags_cma(gfp_t gfp_mask,
  * get_page_from_freelist goes through the zonelist trying to allocate
  * a page.
  */
-bool demote_enabled = false;
 static struct page *
 get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
 						const struct alloc_context *ac)

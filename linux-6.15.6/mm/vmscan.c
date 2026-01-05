@@ -7992,6 +7992,8 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
              */
             unsigned long nr_actually_migrated = migrate_demote_folios(&ready, dst_nid);
             total_migrated += nr_actually_migrated;
+			printk(KERN_INFO "[KDEMOTE] Requested:%lu, Ready:%lu, Migrated:%lu\n",
+				   quota, nr_ready,  nr_actually_migrated);
 
             /* 5. 마이그레이션 실패하여 리스트에 남은 것들 안전하게 LRU 복구 */
             if (!list_empty(&ready)) {
@@ -8027,6 +8029,8 @@ static int demote_worker_fn(void *arg)
         if (kthread_should_stop())
             break;
 
+		printk(KERN_INFO "[KNICE] Worker %d: Woke up! Checking queue...\n", src_nid);
+		
         /* 2. 큐에서 요청 하나 인출 (FIFO) */
         spin_lock(&dn->lock);
         if (!list_empty(&dn->request_queue)) {

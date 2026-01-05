@@ -299,16 +299,16 @@ static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_page
     struct demote_request *new_req;
 
     new_req = kmalloc(sizeof(*new_req), GFP_ATOMIC);
-    if (!new_req)
+    if (!new_req) {
+        printk(KERN_ERR "[KNICE] FAILED to kmalloc request for PID %d\n", pid);
         return;
+    }
 
     new_req->nr_pages = nr_pages;
     new_req->requester_pid = pid;
     INIT_LIST_HEAD(&new_req->list);
 
     spin_lock(&dn->lock);
-    
-    /* 큐 삽입 및 전체 대기 페이지 합산 */
     list_add_tail(&new_req->list, &dn->request_queue);
     atomic_long_add(nr_pages, &dn->pending_pages);
 
@@ -317,10 +317,13 @@ static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_page
         dn->current_owner_pid = pid;
     }
 
+    /* [추가] 로그를 찍고 워커를 깨웁니다 */
+    printk(KERN_INFO "[KNICE] Signal: Wake up worker! (Queue Pending: %ld, PID: %d)\n", 
+           atomic_long_read(&dn->pending_pages), pid);
+    
     wake_up_interruptible(&dn->wq);
     spin_unlock(&dn->lock);
 }
-
 /* do_mmap 내에서 호출될 메인 로직 분리 */
 static void handle_nice_balancing(unsigned long len)
 {
@@ -330,6 +333,7 @@ static void handle_nice_balancing(unsigned long len)
 
     if (nice_val < 0) {
         /* VIP: DRAM 공간 확보 요청 */
+		printk(KERN_INFO "[KNICE-VIP] VIP detected! Enqueueing request for PID %d, pages = %lu", current->pid, nr_pages);
         enqueue_demote_request(dn, nr_pages, current->pid);
     } else {
         /* 일반: 작업 중이면 CXL로 회피 */

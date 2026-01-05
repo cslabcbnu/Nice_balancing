@@ -89,6 +89,7 @@ struct demote_node {
 
 extern struct demote_node demote_nodes[2];
 extern bool knicedemoted_enabled;
+extern bool demote_enabled;
 
 long kernel_set_task_preferred_node(struct task_struct *task, int nid); // implement in mm/mempolicy.c
 
