@@ -378,42 +378,38 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		/*
 		* nice < 0 : DRAM 우선 사용자 → DRAM 확보를 위해 demote 요청
 		*/
-		if (nice_val < 0) {
-			spin_lock(&dn->lock);
+		if (nice_val < 0) 
+		{
+    		spin_lock(&dn->lock);
+    
+    		/* 1. 요청 페이지 수를 원자적으로 누적 (항상 합산) */
+    		atomic_long_add(nr_pages, &dn->target_pages);
+    
+    		/* 2. 워커가 안 돌고 있다면 플래그 세팅 */
+    		if (!atomic_read(&dn->in_progress)) 
+			{
+        		atomic_set(&dn->in_progress, 1);
+        		dn->owner_pid = current->pid;
+        		printk(KERN_INFO "[NICE-BALANCING] New demote request: %lu pages (PID: %d)\n", nr_pages, current->pid);
+    		} 
+			else 
+			{
+        		printk(KERN_INFO "[NICE-BALANCING] Appended: %lu pages (Total pending: %ld)\n", nr_pages, atomic_long_read(&dn->target_pages));
+    		}
 
-			if (atomic_read(&dn->in_progress)) {
-				/* 워커가 이미 동작 중 → 추가 요청 누적 */
-				atomic_long_add(nr_pages, &dn->target_pages);
-
-				printk(KERN_INFO
-					"[NICE-BALANCING] do_mmap: appended %lu pages (total now %ld) for demote (nice=%d)\n",
-					nr_pages,
-					atomic_long_read(&dn->target_pages),
-					nice_val);
-
-			} else {
-				/* 새로운 작업 요청 시작 */
-				atomic_set(&dn->in_progress, 1);
-				atomic_long_set(&dn->target_pages, nr_pages);
-
-				dn->owner_pid = current->pid;
-
-				printk(KERN_INFO
-					"[NICE-BALANCING] do_mmap: queued %lu pages for demote (nice=%d)\n",
-					nr_pages, nice_val);
-
-				/* 워커 깨움 */
-				wake_up_interruptible(&dn->wq);
-			}
-
-			spin_unlock(&dn->lock);
-
-		} else {
+    		/* 3. 워커를 깨움 (이미 깨어있어도 안전함) */
+    		wake_up_interruptible(&dn->wq);
+    
+    		spin_unlock(&dn->lock);
+		} 
+		else 
+		{
 			/*
 			* nice >= 0 : DRAM 비우는 중이면 이 프로세스의 신규 mmap은 CXL에서 할당
 			* 즉, “DRAM 비우는 동안에는 DRAM 경쟁 낮음”
 			*/
-			if (atomic_read(&dn->in_progress)) {
+			if (atomic_read(&dn->in_progress)) 
+			{
 
 				/* 이미 prior_alloc 노드를 DRAM → CXL로 전환 */
 				set_preferred_node_for_current(CXL_NODE_ID);

@@ -4561,11 +4561,14 @@ static bool isolate_folio(struct lruvec *lruvec, struct folio *folio, struct sca
 	bool success;
 
 	/* swap constrained */
-	if (!(sc->gfp_mask & __GFP_IO) &&
+	if (!knicedemoted_enabled)
+	{
+		if (!(sc->gfp_mask & __GFP_IO) &&
 	    (folio_test_dirty(folio) ||
 	     (folio_test_anon(folio) && !folio_test_swapcache(folio))))
 		return false;
-
+	}
+	
 	/* raced with release_pages() */
 	if (!folio_try_get(folio))
 		return false;
@@ -7799,7 +7802,7 @@ static inline void init_demote_sc(struct scan_control *sc, unsigned long quota)
     memset(sc, 0, sizeof(*sc));
 
     sc->nr_to_reclaim = quota;        /* isolate loop bound */
-    sc->gfp_mask = GFP_HIGHUSER_MOVABLE;
+    sc->gfp_mask = GFP_HIGHUSER_MOVABLE | __GFP_IO | __GFP_FS;
     sc->priority = 1;                 /* reclaim aggressiveness 제거 */
     sc->may_unmap = 1;
     sc->may_writepage = 1;
@@ -7872,7 +7875,8 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
     /* 1. isolate_folio 내부의 GFP 체크를 통과하기 위한 sc 설정 */
     init_demote_sc(&sc, quota);
     sc.reclaim_idx = MAX_NR_ZONES - 1;
-    sc.gfp_mask |= __GFP_IO; // isolate_folio 내부의 dirty/swap 체크 통과용
+    sc.gfp_mask |= (__GFP_IO | __GFP_FS);
+    sc.may_swap = 1;
 
     /* 2. lru_lock을 잡고 배타적 권한 확보 */
     spin_lock_irq(&lruvec->lru_lock);
@@ -8006,6 +8010,7 @@ static int demote_worker_fn(void *arg)
     int src_nid = (int)(unsigned long)arg; // 이 워커가 담당하는 소스 노드 (0번)
     struct demote_node *dn = &demote_nodes[src_nid];
     long demoted;
+	knicedemoted_enabled = true;
     
     /* * 목적지 노드 결정 
      * 시스템에서 1번 노드가 CXL(Low Tier)이므로 1로 설정합니다.
@@ -8014,32 +8019,41 @@ static int demote_worker_fn(void *arg)
 
     allow_signal(SIGKILL);
 
-    while (!kthread_should_stop()) {
-        long target;
+    // 워커 함수 내부 루프 구조 의사코드
+	while (!kthread_should_stop()) 
+	{
+    	/* 1. 자다가 깨어남 */
+    	wait_event_interruptible(dn->wq, atomic_long_read(&dn->target_pages) > 0 || kthread_should_stop());
 
-        wait_event_interruptible(dn->wq,
-            atomic_read(&dn->in_progress) || kthread_should_stop());
+    	while (atomic_long_read(&dn->target_pages) > 0) 
+		{
+        	/* 한 번에 너무 오래 잡지 않도록 배치 단위로 처리 (예: 32768 페이지) */
+        	unsigned long current_target = atomic_long_read(&dn->target_pages);
+        	if (current_target > 32768) current_target = 32768;
 
-        if (kthread_should_stop())
-            break;
+        	/* 실제 마이그레이션 실행 */
+        	unsigned long migrated = try_to_demote_pages(current_target, CXL_NODE_ID);
 
-        target = atomic_long_xchg(&dn->target_pages, 0);
-        if (target <= 0) {
-            atomic_set(&dn->in_progress, 0);
-            continue;
-        }
+        	/* 2. [핵심] 성공한 만큼 차감 */
+        	if (migrated > 0) 
+			{
+            	atomic_long_sub(migrated, &dn->target_pages);
+        	}
 
-        // 목적지를 dst_nid(1번 노드)로 명시하여 호출
-        printk(KERN_INFO "[DEMOTE-WORKER] Starting demote from %d to %d (target: %ld pages)\n",
-               src_nid, dst_nid, target);
+        	/* 3. 더 이상 진전이 없거나(DRAM 고갈 등) 다 옮겼으면 중단 */
+        	if (migrated == 0 || atomic_long_read(&dn->target_pages) <= 0) 
+			{
+            	atomic_long_set(&dn->target_pages, 0); // 남은 요청 강제 초기화 (선택 사항)
+            	break;
+        	}
 
-        demoted = try_to_demote_pages(target, dst_nid);
+        	cond_resched(); // 다른 태스크에 CPU 양보
+    	}
 
-        printk(KERN_INFO "[DEMOTE-WORKER] Finished demote %ld pages to node %d\n",
-               demoted, dst_nid);
-
-        atomic_set(&dn->in_progress, 0);
-    }
+    	/* 모든 요청 처리 완료 시 플래그 해제 */
+		knicedemoted_enabled = false;
+    	atomic_set(&dn->in_progress, 0);
+	}
     return 0;
 }
 
