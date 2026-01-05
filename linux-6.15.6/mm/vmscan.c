@@ -7868,60 +7868,46 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
     unsigned long collected = 0;
     int type, zone, gen_idx;
 
-    /* 1. 순회를 위해 우선 락을 잡습니다. */
     spin_lock_irq(&lruvec->lru_lock);
 
-    /* * MGLRU 구조체 정의에 따라:
-     * type: ANON_AND_FILE (0: ANON, 1: FILE)
-     * seq: min_seq[type]부터 max_seq까지가 현재 유효한 세대
-     */
     for (type = 0; type < ANON_AND_FILE; type++) {
-        /* max_seq는 하나로 공용, min_seq는 type별로 관리됨을 확인 */
         for (unsigned long seq = lrugen->min_seq[type]; seq <= lrugen->max_seq; seq++) {
             gen_idx = seq % MAX_NR_GENS;
-
             for (zone = MAX_NR_ZONES - 1; zone >= 0; zone--) {
                 struct list_head *head = &lrugen->folios[gen_idx][type][zone];
-                struct folio *folio, *next;
+                struct folio *folio;
 
-                /* 꼬리(Tail) 부분이 더 오래된 페이지이므로 역방향 순회 */
-                list_for_each_entry_safe_reverse(folio, next, head, lru) {
-                    if (collected >= quota)
-                        goto out;
+                /* [중요] 락을 중간에 풀기 때문에 safe 루프만으로는 부족합니다.
+                   가장 안전한 방법은 루프마다 꼬리에서 하나씩 꺼내오는 것입니다. */
+                while (!list_empty(head) && collected < quota) {
+                    folio = lru_to_folio(head); // 리스트의 마지막(가장 오래된) 폴리오 선택
 
-                    if (!folio_test_lru(folio) || folio_test_unevictable(folio))
-                        continue;
+                    if (!folio_test_lru(folio) || folio_test_unevictable(folio) || !folio_try_get(folio)) {
+                        /* 격리 불가능한 폴리오는 리스트 맨 앞으로 옮겨서 무한 루프 방지 */
+                        list_move(&folio->lru, head);
+                        continue; 
+                    }
 
-                    /* [안전성] 참조 카운트를 올려 격리 준비 */
-                    if (!folio_try_get(folio))
-                        continue;
-
-                    /* lru_lock을 해제하고 격리 수행 (커널 규칙) */
+                    /* 락 해제 전 임시 리스트 조작이 아닌 격리 시도 */
                     spin_unlock_irq(&lruvec->lru_lock);
                     
                     if (folio_isolate_lru(folio)) {
-                        /* 격리 성공: 준비된 리스트로 이동 */
-                        list_move(&folio->lru, list);
+                        list_add(&folio->lru, list); // 성공 시 우리 쪽 리스트로 추가
                         collected += folio_nr_pages(folio);
                     } else {
-                        /* 격리 실패: 참조 카운트 복원 */
                         folio_put(folio);
                     }
 
-                    /* 다음 폴리오 처리를 위해 다시 락 획득 */
                     spin_lock_irq(&lruvec->lru_lock);
+                    /* 락을 다시 잡았으므로 head 상태가 변했을 수 있음 -> while문 처음으로 */
                 }
+                if (collected >= quota) goto out;
             }
         }
     }
 
 out:
     spin_unlock_irq(&lruvec->lru_lock);
-
-    if (collected > 0)
-        printk(KERN_INFO "[KDEMOTE_MGLRU] Target:%lu, Collected:%lu\n", 
-               quota, collected);
-
     return collected;
 }
 
