@@ -7867,54 +7867,49 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
     unsigned long collected = 0;
     int type, zone, gen_idx;
-    
+
     /* 1. 순회를 위해 우선 락을 잡습니다. */
     spin_lock_irq(&lruvec->lru_lock);
 
-    for (type = 0; type < NR_LRU_GEN_TYPES; type++) {
-        for (unsigned long seq = lrugen->min_seq[type]; seq <= lrugen->max_seq[type]; seq++) {
+    /* * MGLRU 구조체 정의에 따라:
+     * type: ANON_AND_FILE (0: ANON, 1: FILE)
+     * seq: min_seq[type]부터 max_seq까지가 현재 유효한 세대
+     */
+    for (type = 0; type < ANON_AND_FILE; type++) {
+        /* max_seq는 하나로 공용, min_seq는 type별로 관리됨을 확인 */
+        for (unsigned long seq = lrugen->min_seq[type]; seq <= lrugen->max_seq; seq++) {
             gen_idx = seq % MAX_NR_GENS;
-            
+
             for (zone = MAX_NR_ZONES - 1; zone >= 0; zone--) {
                 struct list_head *head = &lrugen->folios[gen_idx][type][zone];
                 struct folio *folio, *next;
 
+                /* 꼬리(Tail) 부분이 더 오래된 페이지이므로 역방향 순회 */
                 list_for_each_entry_safe_reverse(folio, next, head, lru) {
                     if (collected >= quota)
                         goto out;
 
-                    /* 기본적인 물리적 상태 체크 */
                     if (!folio_test_lru(folio) || folio_test_unevictable(folio))
                         continue;
 
-                    /* * [체크포인트 1] elevated refcount 필요 
-                     * folio_try_get으로 참조 카운트를 올리는 데 성공해야만 안전하게 격리 가능합니다.
-                     */
+                    /* [안전성] 참조 카운트를 올려 격리 준비 */
                     if (!folio_try_get(folio))
                         continue;
 
-                    /* * [체크포인트 2] lru_lock을 해제하고 호출해야 함 
-                     * 주석 규칙 (2)번을 지키기 위해 잠시 락을 풀고 격리 후 다시 잡습니다.
-                     */
+                    /* lru_lock을 해제하고 격리 수행 (커널 규칙) */
                     spin_unlock_irq(&lruvec->lru_lock);
                     
                     if (folio_isolate_lru(folio)) {
-                        /* 격리 성공: 우리 리스트로 이동 */
+                        /* 격리 성공: 준비된 리스트로 이동 */
                         list_move(&folio->lru, list);
                         collected += folio_nr_pages(folio);
                     } else {
-                        /* 격리 실패: 참조 카운트 다시 원복 */
+                        /* 격리 실패: 참조 카운트 복원 */
                         folio_put(folio);
                     }
 
+                    /* 다음 폴리오 처리를 위해 다시 락 획득 */
                     spin_lock_irq(&lruvec->lru_lock);
-                    
-                    /* 락을 풀었다가 다시 잡았으므로, 리스트 정합성을 위해 
-                     * 현재 루프의 next 포인터가 유효한지 보장할 수 없으므로 
-                     * 안전하게 처음이나 다음 위치를 재탐색해야 할 수 있지만,
-                     * list_for_each_entry_safe_reverse의 'next'가 이미 격리된 
-                     * folio의 이전 노드를 가리키고 있으므로 계속 진행 가능합니다.
-                     */
                 }
             }
         }
@@ -7924,7 +7919,7 @@ out:
     spin_unlock_irq(&lruvec->lru_lock);
 
     if (collected > 0)
-        printk(KERN_INFO "[KDEMOTE_HIJACK_SAFE] Target:%lu, Hijacked:%lu\n", 
+        printk(KERN_INFO "[KDEMOTE_MGLRU] Target:%lu, Collected:%lu\n", 
                quota, collected);
 
     return collected;
