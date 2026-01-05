@@ -8030,8 +8030,6 @@ static int demote_worker_fn(void *arg)
 
         if (kthread_should_stop())
             break;
-
-		printk(KERN_INFO "[KNICE] Worker %d: Woke up! Checking queue...\n", src_nid);
 		
         /* 2. 큐에서 요청 하나 인출 (FIFO) */
         spin_lock(&dn->lock);
@@ -8044,6 +8042,8 @@ static int demote_worker_fn(void *arg)
 
         if (!req) continue;
 
+		printk(KERN_INFO "[KNICE] Worker 0: Processing PID %d, target pages: %lu\n", 
+       req->requester_pid, req->nr_pages);
         /* 3. 해당 요청의 목표량(nr_pages)이 0이 될 때까지 마이그레이션 반복 */
         unsigned long remaining = req->nr_pages;
         knicedemoted_enabled = true; // 마이그레이션 활성화 플래그
@@ -8054,7 +8054,11 @@ static int demote_worker_fn(void *arg)
             unsigned long batch = min(remaining, 32768UL); // 최대 128MB 단위
 
             /* 실제 마이그레이션 실행 (전 세대 훑기) */
+			
             unsigned long migrated = try_to_demote_pages(batch, dst_nid);
+
+			printk(KERN_INFO "[KNICE] Worker 0: Batch attempt (%lu pages), Actually Migrated: %lu\n", 
+           batch, migrated);
 
             if (migrated > 0) 
             {
@@ -8067,6 +8071,7 @@ static int demote_worker_fn(void *arg)
             if (migrated == 0) {
                 // 남은 양이 있더라도 현재 뺄 수 있는게 없으므로 강제 종료
                 atomic_long_sub(remaining, &dn->pending_pages);
+				printk(KERN_INFO "[KNICE] Worker 0: Migration failed/stopped (remaining: %lu)\n", remaining);
                 break;
             }
 

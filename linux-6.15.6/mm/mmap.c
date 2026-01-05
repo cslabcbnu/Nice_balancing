@@ -318,8 +318,7 @@ static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_page
     }
 
     /* [추가] 로그를 찍고 워커를 깨웁니다 */
-    printk(KERN_INFO "[KNICE] Signal: Wake up worker! (Queue Pending: %ld, PID: %d)\n", 
-           atomic_long_read(&dn->pending_pages), pid);
+           atomic_long_read(&dn->pending_pages, pid);
     
     wake_up_interruptible(&dn->wq);
     spin_unlock(&dn->lock);
