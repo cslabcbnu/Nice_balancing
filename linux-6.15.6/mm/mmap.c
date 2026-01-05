@@ -300,7 +300,7 @@ static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_page
 
     new_req = kmalloc(sizeof(*new_req), GFP_ATOMIC);
     if (!new_req) {
-        printk(KERN_ERR "[KNICE] FAILED to kmalloc request for PID %d\n", pid);
+        //printk(KERN_ERR "[KNICE] FAILED to kmalloc request for PID %d\n", pid);
         return;
     }
 
@@ -329,7 +329,7 @@ static void handle_nice_balancing(unsigned long len)
 
     if (nice_val < 0) {
         /* VIP: DRAM 공간 확보 요청 */
-		printk(KERN_INFO "[KNICE-VIP] VIP detected! Enqueueing request for PID %d, pages = %lu", current->pid, nr_pages);
+		//printk(KERN_INFO "[KNICE-VIP] VIP detected! Enqueueing request for PID %d, pages = %lu", current->pid, nr_pages);
         enqueue_demote_request(dn, nr_pages, current->pid);
     } else {
         /* 일반: 작업 중이면 CXL로 회피 */

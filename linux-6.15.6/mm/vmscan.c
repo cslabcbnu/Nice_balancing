@@ -7872,7 +7872,7 @@ static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, 
     return nr_ready;
 }
 
-/* 3. MGLRU 수집 함수 (unused variable 경고 해결 버전) */
+/* 3. MGLRU 수집 함수*/
 static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned long quota, struct list_head *list)
 {
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
@@ -7882,12 +7882,23 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
 
     init_demote_sc(&sc, quota);
     sc.may_swap = 1; // Anon 수집을 위해 필수
+	/* collect_cold_folios_mglru 시작부 */
+	printk(KERN_INFO "[KDEMOTE] enter collect_cold_folios_mglru: lruvec=%p quota=%lu\n", lruvec, quota);
+	if (!lruvec) {
+    	printk(KERN_ERR "[KDEMOTE] lruvec is NULL\n");
+    	return 0;
+	}
+	printk(KERN_INFO "[KDEMOTE] lrugen=%p min_seq0=%lu min_seq1=%lu max_seq=%lu\n",
+       	lrugen, lrugen->min_seq[0], lrugen->min_seq[1], READ_ONCE(lrugen->max_seq));
 
+	printk(KERN_DEBUG "[KDEMOTE] scanning gen=%d type=%d zone=%d",
+       gen, type, zone);	
     spin_lock_irq(&lruvec->lru_lock);
 	
 
     /* 1. Anon(0)을 먼저 훑고, 그 다음 File(1)을 훑도록 순서 고정 */
     for (type = 0; type < ANON_AND_FILE; type++) {
+		
         
         /* 2. [핵심] min_seq부터 max_seq까지 모든 세대를 훑음 */
 		unsigned long max_seq = READ_ONCE(lrugen->max_seq);
@@ -7897,12 +7908,12 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
             for (zone = MAX_NR_ZONES - 1; zone >= 0; zone--) {
                 struct list_head *head = &lrugen->folios[gen][type][zone];
                 LIST_HEAD(moved);
+				
+
 
                 while (!list_empty(head) && collected < quota) {
                     struct folio *folio = lru_to_folio(head);
                     
-                    /* 이제 수정하신 isolate_folio가 knicedemoted_enabled 덕분에 
-                       Anon 페이지를 true로 반환하며 우리 리스트에 담아줄 것입니다. */
                     if (isolate_folio(lruvec, folio, &sc)) {
                         list_add(&folio->lru, list);
                         collected += folio_nr_pages(folio);
@@ -7980,6 +7991,9 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
             break; // 더 이상 DRAM에서 뺄 수 있는 페이지가 없음
 
         /* 2. 선별 (마이그레이션 가능 여부 확인 후 ready 이동) */
+		printk(KERN_INFO "[KDEMOTE] enter prepare_demote_folios: from=%p dst_nid=%d\n", &collected, dst_nid);
+
+
         unsigned long nr_ready = prepare_demote_folios(&collected, dst_nid, &ready);
 
         /* 3. 선별 과정에서 제외된 페이지(고정된 페이지 등) 즉시 LRU 복구 */
@@ -7994,8 +8008,7 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
              */
             unsigned long nr_actually_migrated = migrate_demote_folios(&ready, dst_nid);
             total_migrated += nr_actually_migrated;
-			printk(KERN_INFO "[KDEMOTE] Requested:%lu, Ready:%lu, Migrated:%lu\n",
-				   quota, nr_ready,  nr_actually_migrated);
+			//printk(KERN_INFO "[KDEMOTE] Requested:%lu, Ready:%lu, Migrated:%lu\n", quota, nr_ready,  nr_actually_migrated);
 
             /* 5. 마이그레이션 실패하여 리스트에 남은 것들 안전하게 LRU 복구 */
             if (!list_empty(&ready)) {
@@ -8042,8 +8055,7 @@ static int demote_worker_fn(void *arg)
 
         if (!req) continue;
 
-		printk(KERN_INFO "[KNICE] Worker 0: Processing PID %d, target pages: %lu\n", 
-       req->requester_pid, req->nr_pages);
+		//printk(KERN_INFO "[KNICE] Worker 0: Processing PID %d, target pages: %lu\n", req->requester_pid, req->nr_pages);
         /* 3. 해당 요청의 목표량(nr_pages)이 0이 될 때까지 마이그레이션 반복 */
         unsigned long remaining = req->nr_pages;
         knicedemoted_enabled = true; // 마이그레이션 활성화 플래그
@@ -8057,8 +8069,7 @@ static int demote_worker_fn(void *arg)
 			
             unsigned long migrated = try_to_demote_pages(batch, dst_nid);
 
-			printk(KERN_INFO "[KNICE] Worker 0: Batch attempt (%lu pages), Actually Migrated: %lu\n", 
-           batch, migrated);
+			//printk(KERN_INFO "[KNICE] Worker 0: Batch attempt (%lu pages), Actually Migrated: %lu\n", batch, migrated);
 
             if (migrated > 0) 
             {
@@ -8071,7 +8082,7 @@ static int demote_worker_fn(void *arg)
             if (migrated == 0) {
                 // 남은 양이 있더라도 현재 뺄 수 있는게 없으므로 강제 종료
                 atomic_long_sub(remaining, &dn->pending_pages);
-				printk(KERN_INFO "[KNICE] Worker 0: Migration failed/stopped (remaining: %lu)\n", remaining);
+				//printk(KERN_INFO "[KNICE] Worker 0: Migration failed/stopped (remaining: %lu)\n", remaining);
                 break;
             }
 
