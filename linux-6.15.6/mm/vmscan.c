@@ -7964,57 +7964,50 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 {
     int src_nid = 0; 
     struct pglist_data *pgdat = NODE_DATA(src_nid);
-    
-    /* * [패닉 방지 핵심] 
-     * &pgdat->lruvec을 직접 쓰지 말고, mem_cgroup_lruvec을 통해 
-     * root_mem_cgroup(모든 페이지의 조상)과 연결된 lruvec을 가져옵니다. 
-     */
     struct lruvec *lruvec = mem_cgroup_lruvec(root_mem_cgroup, pgdat); 
-    
-    unsigned long migrated = 0;
-    int retries = 0;
-
-    printk(KERN_INFO "[KDEMOTE_TRACE] Starting try_to_demote (target:%lu, lruvec:%p)\n", 
-           nr_pages, lruvec);
+    unsigned long total_migrated = 0;
 
     lru_add_drain_all();
 
-    while (migrated < nr_pages) {
+    while (total_migrated < nr_pages) {
         LIST_HEAD(collected);
         LIST_HEAD(ready);
-        unsigned long quota = nr_pages - migrated;
-        unsigned long nr_collected;
+        unsigned long quota = nr_pages - total_migrated;
+        
+        /* 1. MGLRU에서 격리 (이때 페이지들의 참조카운트가 올라감) */
+        unsigned long nr_collected = collect_cold_folios_mglru(lruvec, quota, &collected);
+        if (nr_collected == 0) break;
 
-        /* MGLRU 엔진 가동 */
-        nr_collected = collect_cold_folios_mglru(lruvec, quota, &collected);
-
-        if (nr_collected == 0) {
-            /* * 내릴 페이지가 없다면 세대를 강제로 넘기거나(aging), 
-             * 잠시 쉬었다가 다시 시도합니다.
-             */
-            if (++retries > 3) break;
-            cond_resched();
-            continue;
-        }
-
-        /* 통계 및 준비 */
+        /* 2. 마이그레이션 가능 페이지 선별 (collected -> ready 로 이동) */
         unsigned long nr_ready = prepare_demote_folios(&collected, dst_nid, &ready);
 
-        /* 남은 건 원래대로 (MGLRU 리스트로 복귀) */
-        if (!list_empty(&collected))
+        /* 3. [중요] 선별되지 못한 나머지는 즉시 반환 (리스트 비우기) */
+        if (!list_empty(&collected)) {
             putback_movable_pages(&collected);
-
-        if (nr_ready > 0) {
-            unsigned long nr_actually_migrated = migrate_demote_folios(&ready, dst_nid);
-            migrated += nr_actually_migrated;
-
-			if(!list_empty(&ready))
-				putback_movable_pages(&ready);
         }
 
+        /* 4. 마이그레이션 실행 */
+        if (nr_ready > 0) {
+            /* migrate_pages는 성공/실패와 상관없이 내부적으로 리스트 요소를 처리하려고 시도함 */
+            int nr_failed = migrate_pages(&ready, alloc_migration_target, NULL, 
+                                        (unsigned long)&((struct migration_target_control){
+                                            .nid = dst_nid,
+                                            .gfp_mask = GFP_HIGHUSER_MOVABLE | __GFP_THISNODE,
+                                        }), MIGRATE_ASYNC, MR_DEMOTION, NULL);
+            
+            if (nr_failed >= 0) {
+                total_migrated += (nr_ready - (unsigned long)nr_failed);
+            }
+
+            /* 5. [핵심] 마이그레이션에 실패하여 ready 리스트에 남은 것들 안전하게 처리 */
+            if (!list_empty(&ready)) {
+                putback_movable_pages(&ready);
+            }
+        }
+        
         cond_resched();
     }
-    return migrated;
+    return total_migrated;
 }
 
 static int demote_worker_fn(void *arg)
