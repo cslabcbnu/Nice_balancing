@@ -7865,49 +7865,59 @@ static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, 
 static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned long quota, struct list_head *list)
 {
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
+    struct scan_control sc;
     unsigned long collected = 0;
-    int type, zone, gen_idx;
+    int type, zone, gen;
 
+    /* 1. isolate_folio 내부의 GFP 체크를 통과하기 위한 sc 설정 */
+    init_demote_sc(&sc, quota);
+    sc.reclaim_idx = MAX_NR_ZONES - 1;
+    sc.gfp_mask |= __GFP_IO; // isolate_folio 내부의 dirty/swap 체크 통과용
+
+    /* 2. lru_lock을 잡고 배타적 권한 확보 */
     spin_lock_irq(&lruvec->lru_lock);
 
     for (type = 0; type < ANON_AND_FILE; type++) {
-        for (unsigned long seq = lrugen->min_seq[type]; seq <= lrugen->max_seq; seq++) {
-            gen_idx = seq % MAX_NR_GENS;
-            for (zone = MAX_NR_ZONES - 1; zone >= 0; zone--) {
-                struct list_head *head = &lrugen->folios[gen_idx][type][zone];
-                struct folio *folio;
+        /* 현재 타입의 가장 오래된 세대 인덱스 */
+        gen = lru_gen_from_seq(lrugen->min_seq[type]);
 
-                /* [중요] 락을 중간에 풀기 때문에 safe 루프만으로는 부족합니다.
-                   가장 안전한 방법은 루프마다 꼬리에서 하나씩 꺼내오는 것입니다. */
-                while (!list_empty(head) && collected < quota) {
-                    folio = lru_to_folio(head); // 리스트의 마지막(가장 오래된) 폴리오 선택
+        for (zone = MAX_NR_ZONES - 1; zone >= 0; zone--) {
+            LIST_HEAD(moved);
+            struct list_head *head = &lrugen->folios[gen][type][zone];
+            int remaining = MAX_LRU_BATCH;
 
-                    if (!folio_test_lru(folio) || folio_test_unevictable(folio) || !folio_try_get(folio)) {
-                        /* 격리 불가능한 폴리오는 리스트 맨 앞으로 옮겨서 무한 루프 방지 */
-                        list_move(&folio->lru, head);
-                        continue; 
-                    }
-
-                    /* 락 해제 전 임시 리스트 조작이 아닌 격리 시도 */
-                    spin_unlock_irq(&lruvec->lru_lock);
-                    
-                    if (folio_isolate_lru(folio)) {
-                        list_add(&folio->lru, list); // 성공 시 우리 쪽 리스트로 추가
-                        collected += folio_nr_pages(folio);
-                    } else {
-                        folio_put(folio);
-                    }
-
-                    spin_lock_irq(&lruvec->lru_lock);
-                    /* 락을 다시 잡았으므로 head 상태가 변했을 수 있음 -> while문 처음으로 */
+            /* 3. 리스트 순회 (락을 유지한 채 안전하게 수행) */
+            while (!list_empty(head) && collected < quota && remaining--) {
+                struct folio *folio = lru_to_folio(head);
+                
+                /* 4. 커널 표준 격리 함수 호출 (통계 동기화 포함) */
+                if (isolate_folio(lruvec, folio, &sc)) {
+                    /* 성공: 이미 lru_gen_del_folio를 통해 MGLRU에서 제거됨. 
+                       우리는 안전하게 개인 리스트에 추가만 하면 됨 */
+                    list_add(&folio->lru, list);
+                    collected += folio_nr_pages(folio);
+                } else {
+                    /* 실패: (참조 중이거나 busy한 경우) 임시 리스트로 이동하여 루프 탈출 보장 */
+                    list_move(&folio->lru, &moved);
                 }
-                if (collected >= quota) goto out;
             }
+
+            /* 5. 격리 실패한 폴리오들을 원래 위치(head)로 안전하게 복구 */
+            if (!list_empty(&moved))
+                list_splice(&moved, head);
+
+            if (collected >= quota)
+                goto out;
         }
     }
 
 out:
     spin_unlock_irq(&lruvec->lru_lock);
+    
+    if (collected > 0)
+        printk(KERN_INFO "[KDEMOTE_MGLRU_STABLE] Target:%lu, Isolated:%lu\n", 
+               quota, collected);
+        
     return collected;
 }
 
