@@ -77,6 +77,8 @@
 #define LAST_CPUPID_NOT_IN_PAGE_FLAGS
 struct demote_node demote_nodes[2];
 bool knicedemoted_enabled = false;
+bool demote_enabled = false;
+EXPORT_SYMBOL(demote_enabled);
 
 
 #define CREATE_TRACE_POINTS
