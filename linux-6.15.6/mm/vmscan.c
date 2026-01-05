@@ -8009,7 +8009,6 @@ static int demote_worker_fn(void *arg)
     set_user_nice(current, -1);
     int src_nid = (int)(unsigned long)arg; // 이 워커가 담당하는 소스 노드 (0번)
     struct demote_node *dn = &demote_nodes[src_nid];
-    long demoted;
 	knicedemoted_enabled = true;
     
     /* * 목적지 노드 결정 
@@ -8032,7 +8031,7 @@ static int demote_worker_fn(void *arg)
         	if (current_target > 32768) current_target = 32768;
 
         	/* 실제 마이그레이션 실행 */
-        	unsigned long migrated = try_to_demote_pages(current_target, CXL_NODE_ID);
+        	unsigned long migrated = try_to_demote_pages(current_target, dst_nid);
 
         	/* 2. [핵심] 성공한 만큼 차감 */
         	if (migrated > 0) 
