@@ -293,6 +293,51 @@ static void set_preferred_node_for_current(int nid)
         printk(KERN_INFO "[DEMOTE] Preferred node for current task set to %d\n", nid);
 }
 
+/* VIP 프로세스의 마이그레이션 요청을 큐에 삽입하는 헬퍼 함수 */
+static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_pages, pid_t pid)
+{
+    struct demote_request *new_req;
+
+    new_req = kmalloc(sizeof(*new_req), GFP_ATOMIC);
+    if (!new_req)
+        return;
+
+    new_req->nr_pages = nr_pages;
+    new_req->requester_pid = pid;
+    INIT_LIST_HEAD(&new_req->list);
+
+    spin_lock(&dn->lock);
+    
+    /* 큐 삽입 및 전체 대기 페이지 합산 */
+    list_add_tail(&new_req->list, &dn->request_queue);
+    atomic_long_add(nr_pages, &dn->pending_pages);
+
+    if (!atomic_read(&dn->in_progress)) {
+        atomic_set(&dn->in_progress, 1);
+        dn->current_owner_pid = pid;
+    }
+
+    wake_up_interruptible(&dn->wq);
+    spin_unlock(&dn->lock);
+}
+
+/* do_mmap 내에서 호출될 메인 로직 분리 */
+static void handle_nice_balancing(unsigned long len)
+{
+    int nice_val = task_nice(current);
+    unsigned long nr_pages = len >> PAGE_SHIFT;
+    struct demote_node *dn = &demote_nodes[DRAM_NODE_ID];
+
+    if (nice_val < 0) {
+        /* VIP: DRAM 공간 확보 요청 */
+        enqueue_demote_request(dn, nr_pages, current->pid);
+    } else {
+        /* 일반: 작업 중이면 CXL로 회피 */
+        if (atomic_read(&dn->in_progress)) {
+            set_preferred_node_for_current(CXL_NODE_ID);
+        }
+    }
+}
 
 /**
  * do_mmap() - Perform a userland memory mapping into the current process
@@ -370,55 +415,9 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	if (!len)
 		return -EINVAL;
 
-	if (demote_enabled && len > 0) {
-		int nice_val = task_nice(current);
-		unsigned long nr_pages = len >> PAGE_SHIFT;
-		struct demote_node *dn = &demote_nodes[DRAM_NODE_ID];
-
-		/*
-		* nice < 0 : DRAM 우선 사용자 → DRAM 확보를 위해 demote 요청
-		*/
-		if (nice_val < 0) 
-		{
-    		spin_lock(&dn->lock);
-    
-    		/* 1. 요청 페이지 수를 원자적으로 누적 (항상 합산) */
-    		atomic_long_add(nr_pages, &dn->target_pages);
-    
-    		/* 2. 워커가 안 돌고 있다면 플래그 세팅 */
-    		if (!atomic_read(&dn->in_progress)) 
-			{
-        		atomic_set(&dn->in_progress, 1);
-        		dn->owner_pid = current->pid;
-        		printk(KERN_INFO "[NICE-BALANCING] New demote request: %lu pages (PID: %d)\n", nr_pages, current->pid);
-    		} 
-			else 
-			{
-        		printk(KERN_INFO "[NICE-BALANCING] Appended: %lu pages (Total pending: %ld)\n", nr_pages, atomic_long_read(&dn->target_pages));
-    		}
-
-    		/* 3. 워커를 깨움 (이미 깨어있어도 안전함) */
-    		wake_up_interruptible(&dn->wq);
-    
-    		spin_unlock(&dn->lock);
-		} 
-		else 
-		{
-			/*
-			* nice >= 0 : DRAM 비우는 중이면 이 프로세스의 신규 mmap은 CXL에서 할당
-			* 즉, “DRAM 비우는 동안에는 DRAM 경쟁 낮음”
-			*/
-			if (atomic_read(&dn->in_progress)) 
-			{
-
-				/* 이미 prior_alloc 노드를 DRAM → CXL로 전환 */
-				set_preferred_node_for_current(CXL_NODE_ID);
-
-				printk(KERN_INFO
-					"[NICE-BALANCING] do_mmap: nice >=0, DRAM demote in progress → forcing CXL allocation\n");
-			}
-		}
-	}
+	/* 가독성을 위해 별도 함수로 호출 */
+    if (demote_enabled)
+        handle_nice_balancing(len);
 	
 	/*
 	 * Does the application expect PROT_READ to imply PROT_EXEC?

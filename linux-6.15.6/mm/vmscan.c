@@ -7872,60 +7872,46 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned l
     unsigned long collected = 0;
     int type, zone, gen;
 
-    /* 1. isolate_folio 내부의 GFP 체크를 통과하기 위한 sc 설정 */
     init_demote_sc(&sc, quota);
-    sc.reclaim_idx = MAX_NR_ZONES - 1;
-    sc.gfp_mask |= (__GFP_IO | __GFP_FS);
-    sc.may_swap = 1;
+    sc.may_swap = 1; // Anon 수집을 위해 필수
 
-    /* 2. lru_lock을 잡고 배타적 권한 확보 */
     spin_lock_irq(&lruvec->lru_lock);
+	
 
+    /* 1. Anon(0)을 먼저 훑고, 그 다음 File(1)을 훑도록 순서 고정 */
     for (type = 0; type < ANON_AND_FILE; type++) {
-        /* 현재 타입의 가장 오래된 세대 인덱스 */
-        gen = lru_gen_from_seq(lrugen->min_seq[type]);
+        
+        /* 2. [핵심] min_seq부터 max_seq까지 모든 세대를 훑음 */
+		unsigned long max_seq = READ_ONCE(lrugen->max_seq);
+        for (unsigned long seq = lrugen->min_seq[type]; time_before_eq_seq(seq, max_seq);seq++) {
+            gen = lru_gen_from_seq(seq);
+            
+            for (zone = MAX_NR_ZONES - 1; zone >= 0; zone--) {
+                struct list_head *head = &lrugen->folios[gen][type][zone];
+                LIST_HEAD(moved);
 
-        for (zone = MAX_NR_ZONES - 1; zone >= 0; zone--) {
-            LIST_HEAD(moved);
-            struct list_head *head = &lrugen->folios[gen][type][zone];
-            int remaining = MAX_LRU_BATCH;
-
-            /* 3. 리스트 순회 (락을 유지한 채 안전하게 수행) */
-            while (!list_empty(head) && collected < quota && remaining--) {
-                struct folio *folio = lru_to_folio(head);
-                
-                /* 4. 커널 표준 격리 함수 호출 (통계 동기화 포함) */
-                if (isolate_folio(lruvec, folio, &sc)) {
-                    /* 성공: 이미 lru_gen_del_folio를 통해 MGLRU에서 제거됨. 
-                       우리는 안전하게 개인 리스트에 추가만 하면 됨 */
-                    list_add(&folio->lru, list);
-                    collected += folio_nr_pages(folio);
-                } else {
-                    /* 실패: (참조 중이거나 busy한 경우) 임시 리스트로 이동하여 루프 탈출 보장 */
-                    list_move(&folio->lru, &moved);
+                while (!list_empty(head) && collected < quota) {
+                    struct folio *folio = lru_to_folio(head);
+                    
+                    /* 이제 수정하신 isolate_folio가 knicedemoted_enabled 덕분에 
+                       Anon 페이지를 true로 반환하며 우리 리스트에 담아줄 것입니다. */
+                    if (isolate_folio(lruvec, folio, &sc)) {
+                        list_add(&folio->lru, list);
+                        collected += folio_nr_pages(folio);
+                    } else {
+                        list_move(&folio->lru, &moved);
+                    }
                 }
-            }
-
-            /* 5. 격리 실패한 폴리오들을 원래 위치(head)로 안전하게 복구 */
-            if (!list_empty(&moved))
                 list_splice(&moved, head);
-
-            if (collected >= quota)
-                goto out;
+            }
+            if (collected >= quota) break;
         }
+        if (collected >= quota) break;
     }
 
-out:
     spin_unlock_irq(&lruvec->lru_lock);
-    
-    if (collected > 0)
-        printk(KERN_INFO "[KDEMOTE_MGLRU_STABLE] Target:%lu, Isolated:%lu\n", 
-               quota, collected);
-        
     return collected;
 }
-
-/* 1. 구조체 전역 선언 제거: nid 사용을 위해 함수 내부로 이동해야 함 */
 
 /* 1. 마이그레이션 실행 함수 (구조체 인자 전달 방식 안정화) */
 static unsigned long migrate_demote_folios(struct list_head *src, int dst_nid)
@@ -7964,11 +7950,12 @@ static unsigned long migrate_demote_folios(struct list_head *src, int dst_nid)
 /* 2. 메인 루프 (함수 호출 일원화) */
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 {
-    int src_nid = 0; 
+    int src_nid = DRAM_NODE_ID; // 0번 노드
     struct pglist_data *pgdat = NODE_DATA(src_nid);
     struct lruvec *lruvec = mem_cgroup_lruvec(root_mem_cgroup, pgdat); 
     unsigned long total_migrated = 0;
 
+    /* 최신 페이지 상태 반영 (캐시된 LRU 페이지들을 리스트로 방출) */
     lru_add_drain_all();
 
     while (total_migrated < nr_pages) {
@@ -7976,98 +7963,137 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
         LIST_HEAD(ready);
         unsigned long quota = nr_pages - total_migrated;
         
-        /* 1. MGLRU에서 격리 */
+        /* * 1. MGLRU에서 격리 
+         * [주의] 이 함수 내부에서 lrugen->min_seq부터 max_seq까지 
+         * 순차적으로 훑어야 Anon/Active 페이지까지 수집됩니다.
+         */
         unsigned long nr_collected = collect_cold_folios_mglru(lruvec, quota, &collected);
-        if (nr_collected == 0) break;
+        if (nr_collected == 0) 
+            break; // 더 이상 DRAM에서 뺄 수 있는 페이지가 없음
 
-        /* 2. 선별 (collected -> ready 이동) */
+        /* 2. 선별 (마이그레이션 가능 여부 확인 후 ready 이동) */
         unsigned long nr_ready = prepare_demote_folios(&collected, dst_nid, &ready);
 
-        /* 3. 선별 안 된 것 즉시 복구 */
+        /* 3. 선별 과정에서 제외된 페이지(고정된 페이지 등) 즉시 LRU 복구 */
         if (!list_empty(&collected)) {
             putback_movable_pages(&collected);
         }
 
-        /* 4. [수정됨] 도우미 함수를 사용하여 마이그레이션 실행 */
+        /* 4. 마이그레이션 실행 */
         if (nr_ready > 0) {
+            /* * migrate_pages를 래핑한 도우미 함수 호출 
+             * nr_actually_migrated = (nr_ready - nr_failed)
+             */
             unsigned long nr_actually_migrated = migrate_demote_folios(&ready, dst_nid);
             total_migrated += nr_actually_migrated;
 
-            /* 5. 마이그레이션 실패하여 리스트에 남은 것들 안전하게 복구 */
+            /* 5. 마이그레이션 실패하여 리스트에 남은 것들 안전하게 LRU 복구 */
             if (!list_empty(&ready)) {
                 putback_movable_pages(&ready);
             }
         }
         
+        /* 배치 처리 중 CPU 점유를 고려하여 스케줄링 기회 부여 */
         cond_resched();
     }
+
     return total_migrated;
 }
 
 static int demote_worker_fn(void *arg)
 {
-    set_user_nice(current, -1);
-    int src_nid = (int)(unsigned long)arg; // 이 워커가 담당하는 소스 노드 (0번)
+    int src_nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[src_nid];
-	knicedemoted_enabled = true;
-    
-    /* * 목적지 노드 결정 
-     * 시스템에서 1번 노드가 CXL(Low Tier)이므로 1로 설정합니다.
-     */
-    int dst_nid = 1; 
+    int dst_nid = 1; // CXL Node
 
+    /* 워커의 Nice 값을 높여 시스템 응답성 유지 */
+    set_user_nice(current, -1);
     allow_signal(SIGKILL);
 
-    // 워커 함수 내부 루프 구조 의사코드
-	while (!kthread_should_stop()) 
-	{
-    	/* 1. 자다가 깨어남 */
-    	wait_event_interruptible(dn->wq, atomic_long_read(&dn->target_pages) > 0 || kthread_should_stop());
+    while (!kthread_should_stop()) 
+    {
+        struct demote_request *req = NULL;
 
-    	while (atomic_long_read(&dn->target_pages) > 0) 
-		{
-        	/* 한 번에 너무 오래 잡지 않도록 배치 단위로 처리 (예: 32768 페이지) */
-        	unsigned long current_target = atomic_long_read(&dn->target_pages);
-        	if (current_target > 32768) current_target = 32768;
+        /* 1. 큐에 작업이 들어올 때까지 대기 */
+        wait_event_interruptible(dn->wq, 
+            !list_empty(&dn->request_queue) || kthread_should_stop());
 
-        	/* 실제 마이그레이션 실행 */
-        	unsigned long migrated = try_to_demote_pages(current_target, dst_nid);
+        if (kthread_should_stop())
+            break;
 
-        	/* 2. [핵심] 성공한 만큼 차감 */
-        	if (migrated > 0) 
-			{
-            	atomic_long_sub(migrated, &dn->target_pages);
-        	}
+        /* 2. 큐에서 요청 하나 인출 (FIFO) */
+        spin_lock(&dn->lock);
+        if (!list_empty(&dn->request_queue)) {
+            req = list_first_entry(&dn->request_queue, struct demote_request, list);
+            list_del(&req->list);
+            dn->current_owner_pid = req->requester_pid;
+        }
+        spin_unlock(&dn->lock);
 
-        	/* 3. 더 이상 진전이 없거나(DRAM 고갈 등) 다 옮겼으면 중단 */
-        	if (migrated == 0 || atomic_long_read(&dn->target_pages) <= 0) 
-			{
-            	atomic_long_set(&dn->target_pages, 0); // 남은 요청 강제 초기화 (선택 사항)
-            	break;
-        	}
+        if (!req) continue;
 
-        	cond_resched(); // 다른 태스크에 CPU 양보
-    	}
+        /* 3. 해당 요청의 목표량(nr_pages)이 0이 될 때까지 마이그레이션 반복 */
+        unsigned long remaining = req->nr_pages;
+        knicedemoted_enabled = true; // 마이그레이션 활성화 플래그
 
-    	/* 모든 요청 처리 완료 시 플래그 해제 */
-		knicedemoted_enabled = false;
-    	atomic_set(&dn->in_progress, 0);
-	}
+        while (remaining > 0) 
+        {
+            /* 한 번에 처리할 배치 크기 결정 */
+            unsigned long batch = min(remaining, 32768UL); // 최대 128MB 단위
+
+            /* 실제 마이그레이션 실행 (전 세대 훑기) */
+            unsigned long migrated = try_to_demote_pages(batch, dst_nid);
+
+            if (migrated > 0) 
+            {
+                remaining -= migrated;
+                atomic_long_sub(migrated, &dn->pending_pages);
+                atomic_long_add(migrated, &dn->demoted_pages);
+            }
+
+            /* 더 이상 마이그레이션할 페이지가 없으면(DRAM 비워짐 등) 루프 탈출 */
+            if (migrated == 0) {
+                // 남은 양이 있더라도 현재 뺄 수 있는게 없으므로 강제 종료
+                atomic_long_sub(remaining, &dn->pending_pages);
+                break;
+            }
+
+            cond_resched(); // CPU 양보
+        }
+
+        /* 4. 하나의 요청 처리 완료 후 정리 */
+        kfree(req);
+
+        /* 5. 큐가 완전히 비었는지 확인 후 플래그 해제 */
+        spin_lock(&dn->lock);
+        if (list_empty(&dn->request_queue)) {
+            knicedemoted_enabled = false;
+            atomic_set(&dn->in_progress, 0);
+            dn->current_owner_pid = 0;
+        }
+        spin_unlock(&dn->lock);
+    }
     return 0;
 }
 
 /* 초기화 함수 */
 static int __init knicedemoted_init(void)
 {
-    int src_node = 0; // DRAM 노드
+    int src_node = DRAM_NODE_ID; // 0번 노드
 
-    // 우선 0번 노드 하나에 대해서만 초기화 수행
-    atomic_set(&demote_nodes[src_node].in_progress, 0);
-    atomic_long_set(&demote_nodes[src_node].target_pages, 0);
-    atomic_long_set(&demote_nodes[src_node].demoted_pages, 0);
-    init_waitqueue_head(&demote_nodes[src_node].wq);
+    /* 1. 큐 및 락 초기화 */
+    INIT_LIST_HEAD(&demote_nodes[src_node].request_queue);
     spin_lock_init(&demote_nodes[src_node].lock);
 
+    /* 2. 상태 변수 초기화 */
+    atomic_set(&demote_nodes[src_node].in_progress, 0);
+    atomic_long_set(&demote_nodes[src_node].pending_pages, 0); // target_pages 대신 사용
+    atomic_long_set(&demote_nodes[src_node].demoted_pages, 0);
+    
+    /* 3. 대기열 초기화 */
+    init_waitqueue_head(&demote_nodes[src_node].wq);
+
+    /* 4. 워커 스레드 생성 */
     struct task_struct *task;
     task = kthread_run(demote_worker_fn, (void *)(unsigned long)src_node,
                        "knicedemoted/%d", src_node);
@@ -8077,7 +8103,7 @@ static int __init knicedemoted_init(void)
         return PTR_ERR(task);
     }
 
-    pr_info("knicedemoted: worker for node %d initialized (Target: Node 1)\n", src_node);
+    pr_info("knicedemoted: worker for node %d initialized (Queue-based)\n", src_node);
     return 0;
 }
 late_initcall(knicedemoted_init);
