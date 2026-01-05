@@ -12,6 +12,11 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+/* mm/vmscan.c 상단에 이 매크로가 있는지 확인하거나 추가 */
+#ifndef time_before_eq_seq
+#define time_before_eq_seq(a, b) (!((a) - (b) > 0))
+#endif
+
 #include <linux/mm.h>
 #include <linux/sched/mm.h>
 #include <linux/module.h>
@@ -72,6 +77,7 @@
 #define LAST_CPUPID_NOT_IN_PAGE_FLAGS
 struct demote_node demote_nodes[2];
 bool knicedemoted_enabled = false;
+
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>

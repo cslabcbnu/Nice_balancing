@@ -62,6 +62,9 @@ bool node_is_toptier(int node);
 implement in vmscan.c 
 trigger in mmap.c */
 
+#define DRAM_NODE_ID 0
+#define CXL_NODE_ID  1
+
 /* 1. 개별 요청 단위 (작업 지시서) */
 struct demote_request {
     struct list_head list;       /* 큐 연결용 헤드 */

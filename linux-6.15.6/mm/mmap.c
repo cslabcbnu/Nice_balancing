@@ -397,8 +397,6 @@ static void handle_nice_balancing(unsigned long len)
  * been performed.
  */
 
-#define CXL_NODE_ID 1  // CXL 노드 ID 지정, 필요시 변경
-#define DRAM_NODE_ID 0 // DRAM 노드 ID 지정, 필요시 변경
 unsigned long do_mmap(struct file *file, unsigned long addr,
 			unsigned long len, unsigned long prot,
 			unsigned long flags, vm_flags_t vm_flags,
@@ -416,9 +414,10 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		return -EINVAL;
 
 	/* 가독성을 위해 별도 함수로 호출 */
-    if (demote_enabled)
-        handle_nice_balancing(len);
-	
+    if (demote_enabled) {
+		handle_nice_balancing(len);
+	}
+        
 	/*
 	 * Does the application expect PROT_READ to imply PROT_EXEC?
 	 *
