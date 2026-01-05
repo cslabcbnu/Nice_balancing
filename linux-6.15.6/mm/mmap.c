@@ -316,9 +316,6 @@ static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_page
         atomic_set(&dn->in_progress, 1);
         dn->current_owner_pid = pid;
     }
-
-    /* [추가] 로그를 찍고 워커를 깨웁니다 */
-           atomic_long_read(&dn->pending_pages, pid);
     
     wake_up_interruptible(&dn->wq);
     spin_unlock(&dn->lock);
