@@ -7969,56 +7969,48 @@ static unsigned long migrate_demote_folios(struct list_head *src, int dst_nid)
 /* 2. 메인 루프 (함수 호출 일원화) */
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 {
-    int src_nid = DRAM_NODE_ID; // 0번 노드
+    int src_nid = DRAM_NODE_ID;
     struct pglist_data *pgdat = NODE_DATA(src_nid);
-    struct lruvec *lruvec = mem_cgroup_lruvec(root_mem_cgroup, pgdat); 
     unsigned long total_migrated = 0;
+    struct mem_cgroup *memcg;
 
-    /* 최신 페이지 상태 반영 (캐시된 LRU 페이지들을 리스트로 방출) */
     lru_add_drain_all();
 
-    while (total_migrated < nr_pages) {
+    /* 1. 시스템 내의 모든 memcg를 순회 (Root 포함 하위 그룹 전체) */
+    memcg = mem_cgroup_iter(NULL, NULL, NULL);
+    do {
+        struct lruvec *lruvec = mem_cgroup_lruvec(memcg, pgdat);
+        unsigned long remaining = nr_pages - total_migrated;
         LIST_HEAD(collected);
         LIST_HEAD(ready);
-        unsigned long quota = nr_pages - total_migrated;
+
+        if (remaining <= 0)
+            break;
+
+        /* 2. 해당 memcg의 lruvec에서 수집 시도 */
+        unsigned long nr_collected = collect_cold_folios_mglru(lruvec, remaining, &collected);
         
-        /* * 1. MGLRU에서 격리 
-         * [주의] 이 함수 내부에서 lrugen->min_seq부터 max_seq까지 
-         * 순차적으로 훑어야 Anon/Active 페이지까지 수집됩니다.
-         */
-        unsigned long nr_collected = collect_cold_folios_mglru(lruvec, quota, &collected);
-        if (nr_collected == 0) 
-            break; // 더 이상 DRAM에서 뺄 수 있는 페이지가 없음
+        if (nr_collected > 0) {
+            /* 3. 수집된게 있다면 선별 및 마이그레이션 실행 */
+            unsigned long nr_ready = prepare_demote_folios(&collected, dst_nid, &ready);
+            
+            if (!list_empty(&collected))
+                putback_movable_pages(&collected);
 
-        /* 2. 선별 (마이그레이션 가능 여부 확인 후 ready 이동) */
-		printk(KERN_INFO "[KDEMOTE] enter prepare_demote_folios: from=%p dst_nid=%d\n", &collected, dst_nid);
-
-
-        unsigned long nr_ready = prepare_demote_folios(&collected, dst_nid, &ready);
-
-        /* 3. 선별 과정에서 제외된 페이지(고정된 페이지 등) 즉시 LRU 복구 */
-        if (!list_empty(&collected)) {
-            putback_movable_pages(&collected);
-        }
-
-        /* 4. 마이그레이션 실행 */
-        if (nr_ready > 0) {
-            /* * migrate_pages를 래핑한 도우미 함수 호출 
-             * nr_actually_migrated = (nr_ready - nr_failed)
-             */
-            unsigned long nr_actually_migrated = migrate_demote_folios(&ready, dst_nid);
-            total_migrated += nr_actually_migrated;
-			//printk(KERN_INFO "[KDEMOTE] Requested:%lu, Ready:%lu, Migrated:%lu\n", quota, nr_ready,  nr_actually_migrated);
-
-            /* 5. 마이그레이션 실패하여 리스트에 남은 것들 안전하게 LRU 복구 */
-            if (!list_empty(&ready)) {
-                putback_movable_pages(&ready);
+            if (nr_ready > 0) {
+                unsigned long nr_actually_migrated = migrate_demote_folios(&ready, dst_nid);
+                total_migrated += nr_actually_migrated;
+                
+                if (!list_empty(&ready))
+                    putback_movable_pages(&ready);
+                
+                printk(KERN_INFO "[KDEMOTE] Success: Migrated %lu pages from memcg %p\n", 
+                       nr_actually_migrated, memcg);
             }
         }
         
-        /* 배치 처리 중 CPU 점유를 고려하여 스케줄링 기회 부여 */
         cond_resched();
-    }
+    } while ((memcg = mem_cgroup_iter(NULL, memcg, NULL)) != NULL); // 다음 Cgroup으로
 
     return total_migrated;
 }
