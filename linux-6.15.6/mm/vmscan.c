@@ -7872,94 +7872,99 @@ static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, 
     return nr_ready;
 }
 
-static bool isolate_folio_force_demote(struct lruvec *lruvec,
-                                       struct folio *folio)
+static bool isolate_folio_demote_raw(struct lruvec *lruvec,
+                                     struct folio *folio)
 {
-    /* LRU에 없으면 스킵 */
+    /* 반드시 LRU에 있어야 함 */
     if (!folio_test_lru(folio))
         return false;
 
-    /* 절대 이동하면 안 되는 것들 */
-    if (folio_test_unevictable(folio))
+    /* 이동하면 안 되는 것들 */
+    if (folio_test_unevictable(folio) ||
+        folio_test_hwpoison(folio) ||
+        folio_is_device_private(folio))
         return false;
 
-    if (folio_test_hwpoison(folio))
-        return false;
-
-    if (folio_is_device_private(folio))
-        return false;
-
+    /* mlocked */
     if (folio_mapped(folio) && folio_test_mlocked(folio))
+        return false;
+
+    /* DRAM만 대상 */
+    if (folio_nid(folio) != DRAM_NODE_ID)
         return false;
 
     /* ref 보호 */
     if (!folio_try_get(folio))
         return false;
 
-    /* LRU bit 제거 */
+    /*
+     * LRU에서 제거
+     * reclaim / gen / active / referenced 무시
+     */
     if (!folio_test_clear_lru(folio)) {
         folio_put(folio);
         return false;
     }
 
-    /*
-     * reclaim 아님 → reclaiming = false
-     * active/anon WARN는 의도된 동작
-     */
-    if (!lru_gen_del_folio(lruvec, folio, false)) {
-        folio_set_lru(folio);
-        folio_put(folio);
-        return false;
+    /* ⚠️ MGLRU accounting 직접 조정 */
+    {
+        int gen = folio_lru_gen(folio);
+        int type = folio_is_file_lru(folio);
+        int zone = folio_zonenum(folio);
+
+        if (gen >= 0) {
+            lru_gen_update_size(lruvec, folio, gen, -1);
+        }
+
+        __mod_lruvec_state(lruvec, NR_LRU_BASE + type, -folio_nr_pages(folio));
     }
 
+    list_del(&folio->lru);
     return true;
 }
+
 
 /* 3. MGLRU 수집 함수*/
 static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec,
                                                unsigned long quota,
-                                               struct list_head *list)
+                                               struct list_head *out)
 {
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
     unsigned long collected = 0;
-    int type, zone, gen;
     unsigned long seq, max_seq;
-
-    if (!quota) return 0;
+    int type, zone, gen;
 
     spin_lock_irq(&lruvec->lru_lock);
 
     for (type = 0; type < ANON_AND_FILE && collected < quota; type++) {
+
         max_seq = READ_ONCE(lrugen->max_seq);
 
-        for (seq = lrugen->min_seq[type]; time_before_eq_seq(seq, max_seq) && collected < quota; seq++) {
+        for (seq = lrugen->min_seq[type];
+             time_before_eq_seq(seq, max_seq) && collected < quota;
+             seq++) {
+
             gen = lru_gen_from_seq(seq);
 
-            for (zone = MAX_NR_ZONES - 1; zone >= 0 && collected < quota; zone--) {
-                struct list_head *head = &lrugen->folios[gen][type][zone];
-                LIST_HEAD(moved); /* 격리 실패한 페이지들을 임시로 담을 곳 */
+            for (zone = MAX_NR_ZONES - 1;
+                 zone >= 0 && collected < quota;
+                 zone--) {
 
-                while (!list_empty(head) && collected < quota) {
-                    struct folio *folio = lru_to_folio(head);
-                    bool was_active = folio_test_active(folio);
+                struct list_head *head =
+                    &lrugen->folios[gen][type][zone];
 
-                    /* 1. MGLRU 규칙 준수: Active 비트가 있으면 잠시 끔 */
-                    if (was_active)
-                        clear_bit(PG_active, &folio->flags);
+                struct folio *folio, *next;
+                list_for_each_entry_safe(folio, next, head, lru) {
 
-                    /* 2. 격리 시도 */
-                    if (isolate_folio_force_demote(lruvec, folio)) {
-                        list_add_tail(&folio->lru, list);
-                        collected += folio_nr_pages(folio);
-                    } else {
-                        /* 3. 격리 실패 시: Active 비트 복구 후 임시 리스트로 이동하여 break 방지 */
-                        if (was_active)
-                            set_bit(PG_active, &folio->flags);
-                        list_move(&folio->lru, &moved);
-                    }
+                    if (collected >= quota)
+                        break;
+
+                    if (!isolate_folio_demote_raw(lruvec, folio))
+                        continue;
+
+                    list_add_tail(&folio->lru, out);
+                    collected += folio_nr_pages(folio);
                 }
-                /* 격리 실패했던 페이지들을 다시 원래 리스트로 복구 */
-                list_splice(&moved, head);
             }
         }
     }
