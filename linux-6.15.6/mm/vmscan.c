@@ -7925,57 +7925,46 @@ static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec,
     int type, zone, gen;
     unsigned long seq, max_seq;
 
-    if (!quota)
-        return 0;
+    if (!quota) return 0;
 
     spin_lock_irq(&lruvec->lru_lock);
 
-    /*
-     * 1. Anon → File 순서
-     *    (VIP 공간 확보 목적이므로 Anon 우선)
-     */
     for (type = 0; type < ANON_AND_FILE && collected < quota; type++) {
-
         max_seq = READ_ONCE(lrugen->max_seq);
 
-        /*
-         * 2. 가장 오래된 세대부터 최신 세대까지
-         *    (Active도 결국 포함됨)
-         */
-        for (seq = lrugen->min_seq[type];
-             time_before_eq_seq(seq, max_seq) && collected < quota;
-             seq++) {
-
+        for (seq = lrugen->min_seq[type]; time_before_eq_seq(seq, max_seq) && collected < quota; seq++) {
             gen = lru_gen_from_seq(seq);
 
-            /*
-             * 3. 높은 zone부터 낮은 zone 순회
-             */
-            for (zone = MAX_NR_ZONES - 1;
-                 zone >= 0 && collected < quota;
-                 zone--) {
+            for (zone = MAX_NR_ZONES - 1; zone >= 0 && collected < quota; zone--) {
+                struct list_head *head = &lrugen->folios[gen][type][zone];
+                LIST_HEAD(moved); /* 격리 실패한 페이지들을 임시로 담을 곳 */
 
-                struct list_head *head =
-                    &lrugen->folios[gen][type][zone];
-
-                /*
-                 * 4. quota 찰 때까지 강제 isolate
-                 */
                 while (!list_empty(head) && collected < quota) {
                     struct folio *folio = lru_to_folio(head);
+                    bool was_active = folio_test_active(folio);
 
-                    if (!isolate_folio_force_demote(lruvec, folio))
-                        break;
+                    /* 1. MGLRU 규칙 준수: Active 비트가 있으면 잠시 끔 */
+                    if (was_active)
+                        clear_bit(PG_active, &folio->flags);
 
-                    list_add_tail(&folio->lru, list);
-                    collected += folio_nr_pages(folio);
+                    /* 2. 격리 시도 */
+                    if (isolate_folio_force_demote(lruvec, folio)) {
+                        list_add_tail(&folio->lru, list);
+                        collected += folio_nr_pages(folio);
+                    } else {
+                        /* 3. 격리 실패 시: Active 비트 복구 후 임시 리스트로 이동하여 break 방지 */
+                        if (was_active)
+                            set_bit(PG_active, &folio->flags);
+                        list_move(&folio->lru, &moved);
+                    }
                 }
+                /* 격리 실패했던 페이지들을 다시 원래 리스트로 복구 */
+                list_splice(&moved, head);
             }
         }
     }
 
     spin_unlock_irq(&lruvec->lru_lock);
-
     return collected;
 }
 
