@@ -7906,11 +7906,9 @@ static bool isolate_folio_demote_raw(struct lruvec *lruvec,
         return false;
     }
 
-    /* ⚠️ MGLRU accounting 직접 조정 */
     {
         int gen = folio_lru_gen(folio);
         int type = folio_is_file_lru(folio);
-        int zone = folio_zonenum(folio);
 
         if (gen >= 0) {
             lru_gen_update_size(lruvec, folio, gen, -1);
