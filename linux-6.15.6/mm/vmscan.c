@@ -7872,63 +7872,110 @@ static unsigned long prepare_demote_folios(struct list_head *from, int dst_nid, 
     return nr_ready;
 }
 
+static bool isolate_folio_force_demote(struct lruvec *lruvec,
+                                       struct folio *folio)
+{
+    /* LRU에 없으면 스킵 */
+    if (!folio_test_lru(folio))
+        return false;
+
+    /* 절대 이동하면 안 되는 것들 */
+    if (folio_test_unevictable(folio))
+        return false;
+
+    if (folio_test_hwpoison(folio))
+        return false;
+
+    if (folio_is_device_private(folio))
+        return false;
+
+    if (folio_mapped(folio) && folio_test_mlocked(folio))
+        return false;
+
+    /* ref 보호 */
+    if (!folio_try_get(folio))
+        return false;
+
+    /* LRU bit 제거 */
+    if (!folio_test_clear_lru(folio)) {
+        folio_put(folio);
+        return false;
+    }
+
+    /*
+     * reclaim 아님 → reclaiming = false
+     * active/anon WARN는 의도된 동작
+     */
+    if (!lru_gen_del_folio(lruvec, folio, false)) {
+        folio_set_lru(folio);
+        folio_put(folio);
+        return false;
+    }
+
+    return true;
+}
+
 /* 3. MGLRU 수집 함수*/
-static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec, unsigned long quota, struct list_head *list)
+static unsigned long collect_cold_folios_mglru(struct lruvec *lruvec,
+                                               unsigned long quota,
+                                               struct list_head *list)
 {
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
-    struct scan_control sc;
     unsigned long collected = 0;
     int type, zone, gen;
+    unsigned long seq, max_seq;
 
-    init_demote_sc(&sc, quota);
-    sc.may_swap = 1; // Anon 수집을 위해 필수
-	/* collect_cold_folios_mglru 시작부 */
-	printk(KERN_INFO "[KDEMOTE] enter collect_cold_folios_mglru: lruvec=%p quota=%lu\n", lruvec, quota);
-	if (!lruvec) {
-    	printk(KERN_ERR "[KDEMOTE] lruvec is NULL\n");
-    	return 0;
-	}
-	printk(KERN_INFO "[KDEMOTE] lrugen=%p min_seq0=%lu min_seq1=%lu max_seq=%lu\n",
-       	lrugen, lrugen->min_seq[0], lrugen->min_seq[1], READ_ONCE(lrugen->max_seq));
+    if (!quota)
+        return 0;
 
-	printk(KERN_DEBUG "[KDEMOTE] scanning gen=%d type=%d zone=%d",
-       gen, type, zone);	
     spin_lock_irq(&lruvec->lru_lock);
-	
 
-    /* 1. Anon(0)을 먼저 훑고, 그 다음 File(1)을 훑도록 순서 고정 */
-    for (type = 0; type < ANON_AND_FILE; type++) {
-		
-        
-        /* 2. [핵심] min_seq부터 max_seq까지 모든 세대를 훑음 */
-		unsigned long max_seq = READ_ONCE(lrugen->max_seq);
-        for (unsigned long seq = lrugen->min_seq[type]; time_before_eq_seq(seq, max_seq);seq++) {
+    /*
+     * 1. Anon → File 순서
+     *    (VIP 공간 확보 목적이므로 Anon 우선)
+     */
+    for (type = 0; type < ANON_AND_FILE && collected < quota; type++) {
+
+        max_seq = READ_ONCE(lrugen->max_seq);
+
+        /*
+         * 2. 가장 오래된 세대부터 최신 세대까지
+         *    (Active도 결국 포함됨)
+         */
+        for (seq = lrugen->min_seq[type];
+             time_before_eq_seq(seq, max_seq) && collected < quota;
+             seq++) {
+
             gen = lru_gen_from_seq(seq);
-            
-            for (zone = MAX_NR_ZONES - 1; zone >= 0; zone--) {
-                struct list_head *head = &lrugen->folios[gen][type][zone];
-                LIST_HEAD(moved);
-				
 
+            /*
+             * 3. 높은 zone부터 낮은 zone 순회
+             */
+            for (zone = MAX_NR_ZONES - 1;
+                 zone >= 0 && collected < quota;
+                 zone--) {
 
+                struct list_head *head =
+                    &lrugen->folios[gen][type][zone];
+
+                /*
+                 * 4. quota 찰 때까지 강제 isolate
+                 */
                 while (!list_empty(head) && collected < quota) {
                     struct folio *folio = lru_to_folio(head);
-                    
-                    if (isolate_folio(lruvec, folio, &sc)) {
-                        list_add(&folio->lru, list);
-                        collected += folio_nr_pages(folio);
-                    } else {
-                        list_move(&folio->lru, &moved);
-                    }
+
+                    if (!isolate_folio_force_demote(lruvec, folio))
+                        break;
+
+                    list_add_tail(&folio->lru, list);
+                    collected += folio_nr_pages(folio);
                 }
-                list_splice(&moved, head);
             }
-            if (collected >= quota) break;
         }
-        if (collected >= quota) break;
     }
 
     spin_unlock_irq(&lruvec->lru_lock);
+
     return collected;
 }
 
