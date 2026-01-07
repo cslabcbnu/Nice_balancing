@@ -92,7 +92,7 @@ struct slab {
 
 	unsigned int __page_type;
 	atomic_t __page_refcount;
-	atomic_t __pagE_coldcount;
+	atomic_t __page_coldcount;
 #ifdef CONFIG_SLAB_OBJ_EXT
 	unsigned long obj_exts;
 #endif
