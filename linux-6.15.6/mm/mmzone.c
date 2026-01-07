@@ -9,8 +9,6 @@
 #include <linux/stddef.h>
 #include <linux/mm.h>
 #include <linux/mmzone.h>
-//hayong
-#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
 
 struct pglist_data *first_online_pgdat(void)
 {
