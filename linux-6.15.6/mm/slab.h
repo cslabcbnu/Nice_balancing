@@ -92,6 +92,7 @@ struct slab {
 
 	unsigned int __page_type;
 	atomic_t __page_refcount;
+	atomic_t __pagE_coldcount;
 #ifdef CONFIG_SLAB_OBJ_EXT
 	unsigned long obj_exts;
 #endif
@@ -102,6 +103,7 @@ struct slab {
 SLAB_MATCH(flags, __page_flags);
 SLAB_MATCH(compound_head, slab_cache);	/* Ensure bit 0 is clear */
 SLAB_MATCH(_refcount, __page_refcount);
+SLAB_MATCH(_coldcount, __page_coldcount);
 #ifdef CONFIG_MEMCG
 SLAB_MATCH(memcg_data, obj_exts);
 #elif defined(CONFIG_SLAB_OBJ_EXT)
