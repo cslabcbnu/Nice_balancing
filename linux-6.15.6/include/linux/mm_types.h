@@ -582,6 +582,7 @@ struct ptdesc {
 	};
 	unsigned int __page_type;
 	atomic_t __page_refcount;
+	atomic_t __page_coldcount;
 #ifdef CONFIG_MEMCG
 	unsigned long pt_memcg_data;
 #endif
@@ -597,6 +598,7 @@ TABLE_MATCH(index, pt_index);
 TABLE_MATCH(rcu_head, pt_rcu_head);
 TABLE_MATCH(page_type, __page_type);
 TABLE_MATCH(_refcount, __page_refcount);
+TABLE_MATCH(_coldcount, __page_coldcount);
 #ifdef CONFIG_MEMCG
 TABLE_MATCH(memcg_data, pt_memcg_data);
 #endif
