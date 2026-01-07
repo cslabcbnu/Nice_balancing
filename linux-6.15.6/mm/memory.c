@@ -5783,7 +5783,7 @@ void folio_dequeue_demote(struct folio *folio)
 
     /* 2. 바구니에서 뺐다면, 다시 OS의 LRU 리스트로 돌려줌 */
     if (removed) {
-        putback_movable_pages(folio);
+        folio_putback_lru(folio);
     }
 }
 
