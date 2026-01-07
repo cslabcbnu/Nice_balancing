@@ -48,8 +48,6 @@
 #include <asm/tlbflush.h>
 
 #include <trace/events/migrate.h>
-//hayong
-#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
 
 #include "internal.h"
 
@@ -706,20 +704,6 @@ void folio_migrate_flags(struct folio *newfolio, struct folio *folio)
 			cpupid = -1;
 	}
 	folio_xchg_last_cpupid(newfolio, cpupid);
-	//hayong
-	if (current->mm) {
-    	int last_user_pid = folio_xchg_last_user_pid(folio, -1);
-
-    	if (sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) {
-        	bool f_toptier = node_is_toptier(folio_nid(folio));
-        	bool t_toptier = node_is_toptier(folio_nid(newfolio));
-        	if (f_toptier != t_toptier)
-            	last_user_pid = -1;
-    	}
-    	folio_xchg_last_user_pid(newfolio, last_user_pid);
-	}
-
-
 	folio_migrate_ksm(newfolio, folio);
 	/*
 	 * Please do not reorder this without considering how mm/ksm.c's

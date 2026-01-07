@@ -122,8 +122,23 @@ static long change_pte_range(struct mmu_gather *tlb,
 				bool toptier;
 
 				/* Avoid TLB flush if possible */
-				if (pte_protnone(oldpte))
+				// hayong
+				if (pte_protnone(oldpte)) {
+					folio = vm_normal_folio(vma, addr, oldpte);
+
+					if (folio && folio_nid(folio) == 0) {
+						int cc = folio_coldcount_inc(folio);
+
+						if(cc >= 5) {
+							if (folio_test_lru(folio)){
+								folio_enqueue_demote(folio);
+							}
+							
+						}
+					}
 					continue;
+				}
+					
 
 				folio = vm_normal_folio(vma, addr, oldpte);
 				if (!folio || folio_is_zone_device(folio) ||

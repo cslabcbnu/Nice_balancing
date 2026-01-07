@@ -65,6 +65,14 @@ trigger in mmap.c */
 #define DRAM_NODE_ID 0
 #define CXL_NODE_ID  1
 
+/* 강등 후보 바구니 (전역 리스트) */
+extern struct list_head demote_candidate_list;
+extern spinlock_t demote_list_lock;
+
+/* 바구니 관리 함수 프로토타입 */
+void folio_enqueue_demote(struct folio *folio);
+void folio_dequeue_demote(struct folio *folio);
+
 /* 1. 개별 요청 단위 (작업 지시서) */
 struct demote_request {
     struct list_head list;       /* 큐 연결용 헤드 */

@@ -90,8 +90,6 @@
 #include "internal.h"
 #include "swap.h"
 
-//hayong
-#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
 
 #if defined(LAST_CPUPID_NOT_IN_PAGE_FLAGS) && !defined(CONFIG_COMPILE_TEST)
 #warning Unfortunate NUMA and NUMA Balancing config, growing page-frame for last_cpupid.
@@ -3380,8 +3378,6 @@ static inline void wp_page_reuse(struct vm_fault *vmf, struct folio *folio)
 		 * unrelated process.
 		 */
 		folio_xchg_last_cpupid(folio, (1 << LAST_CPUPID_SHIFT) - 1);
-		//hayong
-		folio_xchg_last_user_pid(folio, (1 << LAST_CPUPID_SHIFT) - 1);
 	}
 
 	flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
@@ -5749,6 +5745,55 @@ static void numa_rebuild_large_mapping(struct vm_fault *vmf, struct vm_area_stru
 	}
 }
 
+/* hayong */
+
+LIST_HEAD(demote_candidate_list);
+DEFINE_SPINLOCK(demote_list_lock);
+
+void folio_enqueue_demote(struct folio *folio)
+{
+    /* 1. 이미 격리되어 우리 리스트에 있거나, 격리할 수 없는 상태(LRU 아님)면 리턴 */
+    if (!folio_test_lru(folio))
+        return;
+
+    /* 2. OS LRU 리스트에서 해당 폴리오를 떼어냄 (Isolation) */
+    if (folio_isolate_lru(folio)) {
+        spin_lock(&demote_list_lock);
+        
+        /* 3. 이제 자유로워진 folio->lru 필드를 사용하여 우리 바구니에 추가 */
+        /* isolate 성공 시 folio_test_lru는 false가 됨 */
+        list_add_tail(&folio->lru, &demote_candidate_list);
+        
+        spin_unlock(&demote_list_lock);
+    }
+}
+
+void folio_dequeue_demote(struct folio *folio)
+{
+    bool removed = false;
+
+    spin_lock(&demote_list_lock);
+    /* 1. 우리 바구니(리스트)에 매달려 있는지 확인 */
+    /* 주의: list_empty 체크 시 folio->lru가 초기화되어 있어야 함 */
+    if (!list_empty(&folio->lru)) {
+        list_del_init(&folio->lru);
+        removed = true;
+    }
+    spin_unlock(&demote_list_lock);
+
+    /* 2. 바구니에서 뺐다면, 다시 OS의 LRU 리스트로 돌려줌 */
+    if (removed) {
+        putback_movable_pages(folio);
+    }
+}
+
+/* 초기화 */
+static int __init memory_tiers_init(void)
+{
+    INIT_LIST_HEAD(&demote_candidate_list);
+    return 0;
+}
+
 static vm_fault_t do_numa_page(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
@@ -5788,6 +5833,14 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 	folio = vm_normal_folio(vma, vmf->address, pte);
 	if (!folio || folio_is_zone_device(folio))
 		goto out_map;
+	
+	//hayong
+	if(folio)
+	{
+		folio_coldcount_reset(folio);
+		folio_dequeue_demote(folio);
+	}
+	
 
 	nid = folio_nid(folio);
 	nr_pages = folio_nr_pages(folio);

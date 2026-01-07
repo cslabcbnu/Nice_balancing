@@ -30,9 +30,6 @@
 
 #define INIT_PASID	0
 
-//hayong
-#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
-
 struct address_space;
 struct mem_cgroup;
 
@@ -190,6 +187,7 @@ struct page {
 
 	/* Usage count. *DO NOT USE DIRECTLY*. See page_ref.h */
 	atomic_t _refcount;
+	atomic_t _coldcount;
 
 #ifdef CONFIG_MEMCG
 	unsigned long memcg_data;
@@ -214,7 +212,6 @@ struct page {
 
 #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
 	int _last_cpupid;
-	int _last_user_pid;
 #endif
 
 #ifdef CONFIG_KMSAN
@@ -411,6 +408,7 @@ struct folio {
 			};
 			atomic_t _mapcount;
 			atomic_t _refcount;
+			atomic_t _coldcount;
 #ifdef CONFIG_MEMCG
 			unsigned long memcg_data;
 #elif defined(CONFIG_SLAB_OBJ_EXT)
@@ -421,7 +419,6 @@ struct folio {
 #endif
 #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
 			int _last_cpupid;
-			int _last_user_pid;
 #endif
 	/* private: the union with struct page is transitional */
 		};
@@ -498,6 +495,7 @@ FOLIO_MATCH(index, index);
 FOLIO_MATCH(private, private);
 FOLIO_MATCH(_mapcount, _mapcount);
 FOLIO_MATCH(_refcount, _refcount);
+FOLIO_MATCH(_coldcount, _coldcount);
 #ifdef CONFIG_MEMCG
 FOLIO_MATCH(memcg_data, memcg_data);
 #endif
@@ -506,7 +504,6 @@ FOLIO_MATCH(virtual, virtual);
 #endif
 #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
 FOLIO_MATCH(_last_cpupid, _last_cpupid);
-FOLIO_MATCH(_last_user_pid, _last_user_pid);
 #endif
 #undef FOLIO_MATCH
 #define FOLIO_MATCH(pg, fl)						\

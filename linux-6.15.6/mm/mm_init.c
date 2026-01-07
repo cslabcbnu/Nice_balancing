@@ -584,11 +584,11 @@ void __meminit __init_single_page(struct page *page, unsigned long pfn,
 	set_page_links(page, zone, nid, pfn);
 	init_page_count(page);
 	atomic_set(&page->_mapcount, -1);
-	page_cpupid_reset_last(page);
 	//hayong
-	page_user_pid_reset_last(page);
-	page_kasan_tag_reset(page);
+	atomic_set(&page->_coldcount, 0);
 
+	page_cpupid_reset_last(page);
+	page_kasan_tag_reset(page);
 	INIT_LIST_HEAD(&page->lru);
 #ifdef WANT_PAGE_VIRTUAL
 	/* The shift won't overflow because ZONE_NORMAL is below 4G. */

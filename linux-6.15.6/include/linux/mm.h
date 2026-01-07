@@ -34,8 +34,6 @@
 #include <linux/cacheinfo.h>
 #include <linux/rcuwait.h>
 
-//hayong
-#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
 
 struct mempolicy;
 struct anon_vma;
@@ -1407,6 +1405,27 @@ static inline struct folio *virt_to_folio(const void *x)
 	return page_folio(page);
 }
 
+/* folio coldcount */
+static inline int folio_coldcount(const struct folio *folio)
+{
+	return atomic_read(&folio->_coldcount);
+}
+
+static inline void folio_coldcount_set(struct folio *folio, int val)
+{
+	atomic_set(&folio->_coldcount, val);
+}
+
+static inline void folio_coldcount_reset(struct folio *folio)
+{
+	atomic_set(&folio->_coldcount, 0);
+}
+
+static inline int folio_coldcount_inc(struct folio *folio)
+{
+	return atomic_inc_return(&folio->_coldcount);
+}
+
 void __folio_put(struct folio *folio);
 
 void split_page(struct page *page, unsigned int order);
@@ -1807,21 +1826,6 @@ static inline int folio_last_cpupid(struct folio *folio)
 static inline void page_cpupid_reset_last(struct page *page)
 {
 	page->_last_cpupid = -1 & LAST_CPUPID_MASK;
-}
-//hayong
-static inline int folio_xchg_last_user_pid(struct folio *folio, int pid)
-{
-	return xchg(&folio->_last_user_pid, pid);
-}
-
-static inline int folio_last_user_pid(struct folio *folio)
-{
-    return folio->_last_user_pid;
-}
-
-static inline void page_user_pid_reset_last(struct page *page)
-{
-    page->_last_user_pid = -1;
 }
 #else
 static inline int folio_last_cpupid(struct folio *folio)

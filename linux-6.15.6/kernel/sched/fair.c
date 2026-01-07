@@ -53,8 +53,6 @@
 #include <asm/switch_to.h>
 
 #include <uapi/linux/sched/types.h>
-//hayong
-#define LAST_CPUPID_NOT_IN_PAGE_FLAGS
 
 #include "sched.h"
 #include "stats.h"
@@ -1973,11 +1971,6 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
 
 	this_cpupid = cpu_pid_to_cpupid(dst_cpu, current->pid);
 	last_cpupid = folio_xchg_last_cpupid(folio, this_cpupid);
-	//hayong
-	if (likely(current->mm)) {
-		folio_xchg_last_user_pid(folio, current->pid);
-	}
-
 
 	if (!(sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) &&
 	    !node_is_toptier(src_nid) && !cpupid_valid(last_cpupid))
