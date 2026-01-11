@@ -7743,37 +7743,20 @@ static int demote_folio_prepare(struct folio *folio, int dst_nid)
 	int nr_pages = folio_nr_pages(folio);
 	pg_data_t *pgdat = NODE_DATA(dst_nid);
 
-	/* 1. 이미 free / migrating 중인 folio 배제 */
 	if (folio_test_writeback(folio))
 		return -EAGAIN;
 
 	if (folio_test_mlocked(folio))
 		return -EACCES;
 
-	/* 2. knicedemoted가 만든 cold signal 확인 */
-	if (!folio_test_cold(folio))   // ← 네가 만든 coldcount 기반 flag
+	if (!folio_test_cold(folio))
 		return -EAGAIN;
 
-	/*
-	 * 3. 너무 위험한 file folio는 제외
-	 * (AutoNUMA보다 훨씬 관대하게)
-	 */
-	if (folio_is_file_lru(folio)) {
-		if (folio_test_dirty(folio))
-			return -EAGAIN;
-	}
+	if (folio_is_file_lru(folio) && folio_test_dirty(folio))
+		return -EAGAIN;
 
 	if (!migrate_balanced_pgdat(pgdat, nr_pages))
-    return -EAGAIN;
-
-
-	/* 5. active LRU에서 isolate */
-	if (!folio_isolate_lru(folio))
 		return -EAGAIN;
-
-	node_stat_mod_folio(folio,
-		NR_ISOLATED_ANON + folio_is_file_lru(folio),
-		nr_pages);
 
 	return 0;
 }
@@ -7802,95 +7785,93 @@ static unsigned long migrate_demoted_folios(struct list_head *list, int dst_nid)
 }
 
 static unsigned long scan_active_lruvec(struct lruvec *lruvec,
-					struct list_head *candidates,
+					struct list_head *isolated,
 					unsigned long budget)
 {
 	unsigned long collected = 0;
 	struct folio *folio, *next;
-
-	unsigned long scanned = 0;
-	unsigned long cold_hit = 0;
-
+	unsigned long scanned = 0, cold_hit = 0;
 
 	spin_lock_irq(&lruvec->lru_lock);
 
-	list_for_each_entry_safe(folio, next, &lruvec->lists[LRU_ACTIVE_ANON], lru) {
+	list_for_each_entry_safe(folio, next,
+				 &lruvec->lists[LRU_ACTIVE_ANON], lru) {
 
-    	if (collected + folio_nr_pages(folio) > budget)
-        	break;
+		if (collected + folio_nr_pages(folio) > budget)
+			break;
 
-    	scanned++;
+		scanned++;
 
-    	if (!folio_test_cold(folio))
-        	continue;
+		if (!folio_test_cold(folio))
+			continue;
 
-    	cold_hit++;
+		cold_hit++;
 
-    	get_folio(folio);
-    	list_add(&folio->demote_list, candidates);
-    	collected += folio_nr_pages(folio);
+		if (!folio_isolate_lru(folio))
+			continue;
+
+		node_stat_mod_folio(folio, NR_ISOLATED_ANON,
+				    folio_nr_pages(folio));
+
+		list_add(&folio->lru, isolated);
+		collected += folio_nr_pages(folio);
 	}
 
 	spin_unlock_irq(&lruvec->lru_lock);
 
 	printk(KERN_INFO
-    "[KNICE][SCAN] lruvec=%p scanned=%lu cold=%lu\n",
-    lruvec, scanned, cold_hit);
+	       "[KNICE][SCAN] lruvec=%p scanned=%lu cold=%lu isolated_pages=%lu\n",
+	       lruvec, scanned, cold_hit, collected);
 
 	return collected;
 }
 
-unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
+static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 {
 	unsigned long migrated = 0;
 	pg_data_t *pgdat = NODE_DATA(DRAM_NODE_ID);
 	int zid;
 
 	while (migrated < nr_pages) {
-		LIST_HEAD(candidates);   /* scan 결과 */
-		LIST_HEAD(isolated);     /* prepare 통과한 folio */
+		LIST_HEAD(isolated);
+		LIST_HEAD(migrate_list);
 		unsigned long collected = 0;
 
-		/* 1. ACTIVE LRU scan */
+		/* 1. scan + isolate */
 		for (zid = 0; zid < MAX_NR_ZONES; zid++) {
 			struct zone *zone = &pgdat->node_zones[zid];
-			struct lruvec *lruvec;
 
 			if (!managed_zone(zone))
 				continue;
 
-			lruvec = zone_lruvec(zone);
-
 			collected += scan_active_lruvec(
-				lruvec,
-				&candidates,
+				zone_lruvec(zone),
+				&isolated,
 				nr_pages - migrated);
 		}
 
 		if (!collected)
 			break;
 
-		/* 2. demote_folio_prepare 단계 */
-		while (!list_empty(&candidates)) {
+		/* 2. prepare */
+		while (!list_empty(&isolated)) {
 			struct folio *folio;
 
-			folio = list_first_entry(&candidates,
-						 struct folio,
-						 demote_list);
-			list_del(&folio->demote_list);
+			folio = list_first_entry(&isolated,
+						 struct folio, lru);
+			list_del(&folio->lru);
 
 			if (demote_folio_prepare(folio, dst_nid)) {
-				/* prepare 실패 */
-				put_folio(folio);
-				continue;
+				list_add(&folio->lru, &isolated);
+				putback_movable_pages(&isolated);
+				break;
 			}
 
-			/* prepare 성공 → migrate 대상 */
-			list_add(&folio->lru, &isolated);
+			list_add(&folio->lru, &migrate_list);
 		}
 
-		/* 3. migration */
-		migrated += migrate_demoted_folios(&isolated, dst_nid);
+		/* 3. migrate */
+		migrated += migrate_demoted_folios(&migrate_list, dst_nid);
 
 		cond_resched();
 	}

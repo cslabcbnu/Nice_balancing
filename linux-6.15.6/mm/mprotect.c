@@ -129,11 +129,10 @@ static long change_pte_range(struct mmu_gather *tlb,
 					if (folio && folio_test_lru(folio) && folio_nid(folio) == 0) {
 						folio_coldcount_inc(folio);
 						}
+						continue;
 					}
-					continue;
-				}
+				// hayong end
 					
-
 				folio = vm_normal_folio(vma, addr, oldpte);
 				if (!folio || folio_is_zone_device(folio) ||
 				    folio_test_ksm(folio))
