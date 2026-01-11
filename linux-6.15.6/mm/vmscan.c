@@ -7758,8 +7758,8 @@ static struct folio *alloc_misplaced_dst_folio(struct folio *src,
 
 static int demote_folio_prepare(struct folio *folio, int dst_nid)
 {
-	int nr_pages = folio_nr_pages(folio);
-	pg_data_t *pgdat = NODE_DATA(dst_nid);
+	// int nr_pages = folio_nr_pages(folio);
+	// pg_data_t *pgdat = NODE_DATA(dst_nid);
 
 	if (folio_test_writeback(folio))
 		return -EAGAIN;
@@ -7809,16 +7809,13 @@ static unsigned long scan_active_lruvec(struct lruvec *lruvec,
 	unsigned long collected = 0;
 	struct folio *folio, *next;
 	unsigned long scanned = 0, cold_hit = 0;
-	struct lru_gen_struct *lru_gen = &lruvec->lru_gen;
+	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	int gen,type = LRU_ACTIVE_ANON;
 	int zone;
 
-	if(!lru_gen->enabled)
-		return 0;
-
 	spin_lock_irq(&lruvec->lru_lock);
 
-	gen = lru_gen_from_seq(lru_gen->max_seq[type]);
+	gen = lru_gen_from_seq(lrugen->max_seq[type]);
 
 	for(zone=0; zone < MAX_NR_ZONES; zone++) {
 		struct list_head *head = &lrugen->lists[gen][type][zone];
