@@ -7738,6 +7738,24 @@ EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
  * - cold_count 기반 demotion 정책용
  * - reclaim / AutoNUMA 와 철학적으로 분리
  */
+
+static struct folio *alloc_misplaced_dst_folio(struct folio *src,
+					   unsigned long data)
+{
+	int nid = (int) data;
+	int order = folio_order(src);
+	gfp_t gfp = __GFP_THISNODE;
+
+	if (order > 0)
+		gfp |= GFP_TRANSHUGE_LIGHT;
+	else {
+		gfp |= GFP_HIGHUSER_MOVABLE | __GFP_NOMEMALLOC | __GFP_NORETRY |
+			__GFP_NOWARN;
+		gfp &= ~__GFP_RECLAIM;
+	}
+	return __folio_alloc_node(gfp, order, nid);
+}
+
 static int demote_folio_prepare(struct folio *folio, int dst_nid)
 {
 	int nr_pages = folio_nr_pages(folio);
@@ -7835,6 +7853,7 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 	while (migrated < nr_pages) {
 		LIST_HEAD(isolated);
 		LIST_HEAD(migrate_list);
+		LIST_HEAD(putback_list);
 		unsigned long collected = 0;
 
 		/* 1. scan + isolate */
@@ -7862,9 +7881,8 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 			list_del(&folio->lru);
 
 			if (demote_folio_prepare(folio, dst_nid)) {
-				list_add(&folio->lru, &isolated);
-				putback_movable_pages(&isolated);
-				break;
+				list_add(&folio->lru, &putback_list);
+				continue;
 			}
 
 			list_add(&folio->lru, &migrate_list);
@@ -7872,6 +7890,10 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 
 		/* 3. migrate */
 		migrated += migrate_demoted_folios(&migrate_list, dst_nid);
+
+		/* 4. putback */
+		if (!list_empty(&putback_list))
+			putback_movable_pages(&putback_list);
 
 		cond_resched();
 	}
