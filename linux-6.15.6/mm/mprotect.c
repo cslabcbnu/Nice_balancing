@@ -126,14 +126,8 @@ static long change_pte_range(struct mmu_gather *tlb,
 				if (pte_protnone(oldpte)) {
 					folio = vm_normal_folio(vma, addr, oldpte);
 
-					if (folio && folio_nid(folio) == 0) {
-						int cc = folio_coldcount_inc(folio);
-
-						if(cc >= 5) {
-							if (folio_test_lru(folio)){
-								folio_enqueue_demote(folio);
-							}
-							
+					if (folio && folio_test_lru(folio) && folio_nid(folio) == 0) {
+						folio_coldcount_inc(folio);
 						}
 					}
 					continue;

@@ -299,7 +299,7 @@ static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_page
 {
     struct demote_request *new_req;
 
-    new_req = kmalloc(sizeof(*new_req), GFP_ATOMIC);
+    new_req = kmalloc(sizeof(*new_req), GFP_KERNEL);
     if (!new_req) {
         //printk(KERN_ERR "[KNICE] FAILED to kmalloc request for PID %d\n", pid);
         return;
