@@ -5745,48 +5745,6 @@ static void numa_rebuild_large_mapping(struct vm_fault *vmf, struct vm_area_stru
 	}
 }
 
-/* hayong */
-
-LIST_HEAD(demote_candidate_list);
-DEFINE_SPINLOCK(demote_list_lock);
-
-void folio_enqueue_demote(struct folio *folio)
-{
-    /* 1. 이미 격리되어 우리 리스트에 있거나, 격리할 수 없는 상태(LRU 아님)면 리턴 */
-    if (!folio_test_lru(folio))
-        return;
-
-    /* 2. OS LRU 리스트에서 해당 폴리오를 떼어냄 (Isolation) */
-    if (folio_isolate_lru(folio)) {
-        spin_lock(&demote_list_lock);
-        
-        /* 3. 이제 자유로워진 folio->lru 필드를 사용하여 우리 바구니에 추가 */
-        /* isolate 성공 시 folio_test_lru는 false가 됨 */
-        list_add_tail(&folio->lru, &demote_candidate_list);
-        
-        spin_unlock(&demote_list_lock);
-    }
-}
-
-void folio_dequeue_demote(struct folio *folio)
-{
-    bool removed = false;
-
-    spin_lock(&demote_list_lock);
-    /* 1. 우리 바구니(리스트)에 매달려 있는지 확인 */
-    /* 주의: list_empty 체크 시 folio->lru가 초기화되어 있어야 함 */
-    if (!list_empty(&folio->lru)) {
-        list_del_init(&folio->lru);
-        removed = true;
-    }
-    spin_unlock(&demote_list_lock);
-
-    /* 2. 바구니에서 뺐다면, 다시 OS의 LRU 리스트로 돌려줌 */
-    if (removed) {
-        folio_putback_lru(folio);
-    }
-}
-
 /* 초기화 */
 static int __init memory_tiers_init(void)
 {
