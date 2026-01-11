@@ -5745,13 +5745,6 @@ static void numa_rebuild_large_mapping(struct vm_fault *vmf, struct vm_area_stru
 	}
 }
 
-/* 초기화 */
-static int __init memory_tiers_init(void)
-{
-    INIT_LIST_HEAD(&demote_candidate_list);
-    return 0;
-}
-
 static vm_fault_t do_numa_page(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
@@ -5794,12 +5787,8 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 	
 	//hayong
 	if(folio)
-	{
 		folio_coldcount_reset(folio);
-		folio_dequeue_demote(folio);
-	}
 	
-
 	nid = folio_nid(folio);
 	nr_pages = folio_nr_pages(folio);
 

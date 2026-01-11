@@ -7773,8 +7773,8 @@ static int demote_folio_prepare(struct folio *folio, int dst_nid)
 	if (folio_is_file_lru(folio) && folio_test_dirty(folio))
 		return -EAGAIN;
 
-	if (!migrate_balanced_pgdat(pgdat, nr_pages))
-		return -EAGAIN;
+	// if (!migrate_balanced_pgdat(pgdat, nr_pages))
+	// 	return -EAGAIN;
 
 	return 0;
 }
@@ -7809,33 +7809,46 @@ static unsigned long scan_active_lruvec(struct lruvec *lruvec,
 	unsigned long collected = 0;
 	struct folio *folio, *next;
 	unsigned long scanned = 0, cold_hit = 0;
+	struct lru_gen_struct *lru_gen = &lruvec->lru_gen;
+	int gen,type = LRU_ACTIVE_ANON;
+	int zone;
+
+	if(!lru_gen->enabled)
+		return 0;
 
 	spin_lock_irq(&lruvec->lru_lock);
 
-	list_for_each_entry_safe(folio, next,
-				 &lruvec->lists[LRU_ACTIVE_ANON], lru) {
+	gen = lru_gen_from_seq(lru_gen->max_seq[type]);
 
-		if (collected + folio_nr_pages(folio) > budget)
-			break;
+	for(zone=0; zone < MAX_NR_ZONES; zone++) {
+		struct list_head *head = &lrugen->lists[gen][type][zone];
 
-		scanned++;
-
-		if (!folio_test_cold(folio))
+		if (list_empty(head))
 			continue;
+		
+		list_for_each_entry_safe(folio, next, head, lru) {
+			if (collected + folio_nr_pages(folio) > budget)
+				break;
 
-		cold_hit++;
+			scanned++;
 
-		if (!folio_isolate_lru(folio))
-			continue;
+			if (!folio_test_cold(folio))
+				continue;
 
-		node_stat_mod_folio(folio, NR_ISOLATED_ANON,
-				    folio_nr_pages(folio));
+			cold_hit++;
 
-		list_add(&folio->lru, isolated);
-		collected += folio_nr_pages(folio);
+			if (!folio_isolate_lru(folio))
+				continue;
+
+			node_stat_mod_folio(folio, NR_ISOLATED_ANON,
+					    folio_nr_pages(folio));
+
+			list_add(&folio->lru, isolated);
+			collected += folio_nr_pages(folio);
+		}
 	}
 
-	spin_unlock_irq(&lruvec->lru_lock);
+	spin_lock_irq(&lruvec->lru_lock);
 
 	printk(KERN_INFO
 	       "[KNICE][SCAN] lruvec=%p scanned=%lu cold=%lu isolated_pages=%lu\n",
@@ -7846,59 +7859,68 @@ static unsigned long scan_active_lruvec(struct lruvec *lruvec,
 
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 {
-	unsigned long migrated = 0;
-	pg_data_t *pgdat = NODE_DATA(DRAM_NODE_ID);
-	int zid;
+    unsigned long migrated = 0;
+    pg_data_t *pgdat = NODE_DATA(DRAM_NODE_ID);
+    int zid;
 
-	while (migrated < nr_pages) {
-		LIST_HEAD(isolated);
-		LIST_HEAD(migrate_list);
-		LIST_HEAD(putback_list);
-		unsigned long collected = 0;
+    while (migrated < nr_pages) {
+        LIST_HEAD(isolated);
+        LIST_HEAD(migrate_list);
+        LIST_HEAD(putback_list);
+        unsigned long collected = 0;
 
-		/* 1. scan + isolate */
-		for (zid = 0; zid < MAX_NR_ZONES; zid++) {
-			struct zone *zone = &pgdat->node_zones[zid];
+        /* 1. scan + isolate */
+        for (zid = 0; zid < MAX_NR_ZONES; zid++) {
+            struct zone *zone = &pgdat->node_zones[zid];
+            struct lruvec *lruvec;
 
-			if (!managed_zone(zone))
-				continue;
+            if (!managed_zone(zone))
+                continue;
+            
+            /* mem_cgroup_lruvec() 올바른 호출:
+             * 1) mem_cgroup_lruvec(NULL, pgdat) - 노드 전체
+             * 2) 또는 mem_cgroup_zone_lruvec(NULL, zone) - 존별
+             * 여기서는 DRAM 노드 전체를 보고 싶으므로 첫 번째 선택
+             */
+            lruvec = mem_cgroup_lruvec(NULL, pgdat);
 
-			collected += scan_active_lruvec(
-				zone_lruvec(zone),
-				&isolated,
-				nr_pages - migrated);
-		}
+            /* zone_lr → lruvec 로 수정 */
+            collected += scan_active_lruvec(
+                lruvec,  /* zone_lr 제거 */
+                &isolated,
+                nr_pages - migrated);
+        }
 
-		if (!collected)
-			break;
+        if (!collected)
+            break;
 
-		/* 2. prepare */
-		while (!list_empty(&isolated)) {
-			struct folio *folio;
+        /* 2~4. 나머지는 그대로 */
+        while (!list_empty(&isolated)) {
+            struct folio *folio;
 
-			folio = list_first_entry(&isolated,
-						 struct folio, lru);
-			list_del(&folio->lru);
+            folio = list_first_entry(&isolated,
+                         struct folio, lru);
+            list_del(&folio->lru);
 
-			if (demote_folio_prepare(folio, dst_nid)) {
-				list_add(&folio->lru, &putback_list);
-				continue;
-			}
+            if (demote_folio_prepare(folio, dst_nid)) {
+                list_add(&folio->lru, &putback_list);
+                continue;
+            }
 
-			list_add(&folio->lru, &migrate_list);
-		}
+            list_add(&folio->lru, &migrate_list);
+        }
 
-		/* 3. migrate */
-		migrated += migrate_demoted_folios(&migrate_list, dst_nid);
+        /* 3. migrate */
+        migrated += migrate_demoted_folios(&migrate_list, dst_nid);
 
-		/* 4. putback */
-		if (!list_empty(&putback_list))
-			putback_movable_pages(&putback_list);
+        /* 4. putback */
+        if (!list_empty(&putback_list))
+            putback_movable_pages(&putback_list);
 
-		cond_resched();
-	}
+        cond_resched();
+    }
 
-	return migrated;
+    return migrated;
 }
 
 static int demote_worker_fn(void *arg)
