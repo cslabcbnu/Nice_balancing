@@ -7798,9 +7798,10 @@ static unsigned long migrate_demoted_folios(struct list_head *list, int dst_nid)
 
 	nr_failed = 0;
     struct list_head *pos, *n;
-    list_for_each_safe(pos, n, list)
-        nr_failed += folio_nr_pages(list_entry(pos, struct folio, lru));
-
+    list_for_each_safe(pos, n, list) {
+		nr_failed += folio_nr_pages(list_entry(pos, struct folio, lru));
+	}
+        
 	printk(KERN_INFO "[KNICE][MIG] succ=%u fail=%u total=%u dst=%d\n", 
            nr_succeeded, nr_failed, nr_succeeded + nr_failed, dst_nid);
 
