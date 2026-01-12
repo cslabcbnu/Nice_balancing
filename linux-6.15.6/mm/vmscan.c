@@ -7767,9 +7767,6 @@ static int demote_folio_prepare(struct folio *folio, int dst_nid)
 	if (folio_test_mlocked(folio))
 		return -EACCES;
 
-	if (!folio_test_cold(folio))
-		return -EAGAIN;
-
 	if (folio_is_file_lru(folio) && folio_test_dirty(folio))
 		return -EAGAIN;
 
@@ -7782,6 +7779,7 @@ static int demote_folio_prepare(struct folio *folio, int dst_nid)
 static unsigned long migrate_demoted_folios(struct list_head *list, int dst_nid)
 {
 	unsigned int nr_succeeded = 0;
+	unsigned int nr_failed = 0;
 
 	if (list_empty(list))
 		return 0;
@@ -7794,7 +7792,13 @@ static unsigned long migrate_demoted_folios(struct list_head *list, int dst_nid)
 		      MR_KDEMOTED,
 		      &nr_succeeded);
 
-	printk(KERN_INFO "[KNICE][MIG] result: succeeded=%u", nr_succeeded);
+	nr_failed = 0;
+    struct list_head *pos, *n;
+    list_for_each_safe(pos, n, list)
+        nr_failed += folio_nr_pages(list_entry(pos, struct folio, lru));
+
+	printk(KERN_INFO "[KNICE][MIG] succ=%u fail=%u total=%u dst=%d\n", 
+           nr_succeeded, nr_failed, nr_succeeded + nr_failed, dst_nid);
 
 	if (!list_empty(list))
 		putback_movable_pages(list);
@@ -7810,7 +7814,7 @@ static unsigned long scan_active_lruvec(struct lruvec *lruvec,
     struct folio *folio, *next;
     unsigned long scanned = 0, cold_hit = 0;
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
-    int gen, type = 0;  /* anon */
+    int type = 0;  /* anon */
     int zone;
 
     if (!lrugen->enabled)
@@ -7820,12 +7824,12 @@ static unsigned long scan_active_lruvec(struct lruvec *lruvec,
 
     int max_gen = lru_gen_from_seq(lrugen->max_seq);
     
-    /* 점진적 threshold: 5→4→3→...→1 */
+    /* 모든 세대 전체 스캔 + 점진적 threshold */
     for (int threshold = KDEMOTE_COLD_THRESHOLD; threshold >= 1; threshold--) {
-        bool found = false;
+        bool found_this_threshold = false;
         
-        /* 현재 threshold로 스캔 */
-        for (gen = max_gen; gen >= max_gen - 2 && gen >= 0; gen--) {
+        /* 모든 gen 스캔 (max_gen부터 0까지) */
+        for (int gen = max_gen; gen >= 0; gen--) {
             for (zone = 0; zone < MAX_NR_ZONES; zone++) {
                 struct list_head *head = &lrugen->folios[gen][type][zone];
 
@@ -7838,13 +7842,13 @@ static unsigned long scan_active_lruvec(struct lruvec *lruvec,
 
                     scanned++;
 
-                    /* 현재 threshold 체크 */
-                    if (atomic_read(&folio->_coldcount) >= threshold) {
+                    /* 새 함수 사용 */
+                    if (folio_test_cold_step(folio, threshold)) {
                         cold_hit++;
-                        found = true;
+                        found_this_threshold = true;
                         
-                        printk(KERN_DEBUG "[KNICE][COLD T%d] folio=%p count=%d\n", 
-                               threshold, folio, atomic_read(&folio->_coldcount));
+                        printk(KERN_DEBUG "[KNICE][COLD T%d G%d] folio=%p count=%d\n", 
+                               threshold, gen, folio, atomic_read(&folio->_coldcount));
 
                         if (!folio_isolate_lru(folio))
                             continue;
@@ -7859,21 +7863,25 @@ static unsigned long scan_active_lruvec(struct lruvec *lruvec,
             }
         }
         
-        /* threshold에서 하나라도 찾으면 다음 낮은 값으로 넘어감 */
-        if (!found && threshold == KDEMOTE_COLD_THRESHOLD) {
-            printk(KERN_INFO "[KNICE] No cold@5, trying lower thresholds\n");
+        /* 첫 번째 threshold에서 못 찾으면 로그 */
+        if (!found_this_threshold && threshold == KDEMOTE_COLD_THRESHOLD) {
+            printk(KERN_INFO "[KNICE] No cold@%d, trying lower thresholds\n", 
+                   KDEMOTE_COLD_THRESHOLD);
         }
+        
+        /* 충분히 모았으면 조기 종료 */
+        if (collected >= budget)
+            goto unlock;
     }
 
 unlock:
     spin_unlock_irq(&lruvec->lru_lock);
 
-    printk(KERN_INFO "[KNICE][SCAN] gen=%d scanned=%lu cold=%lu isolated=%lu\n",
+    printk(KERN_INFO "[KNICE][SCAN] max_gen=%d scanned=%lu cold=%lu isolated=%lu\n",
            max_gen, scanned, cold_hit, collected);
 
     return collected;
 }
-
 
 static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
 {
@@ -7906,7 +7914,7 @@ static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
             collected += scan_active_lruvec(
                 lruvec,  /* zone_lr 제거 */
                 &isolated,
-                nr_pages - migrated);
+                min_t(unsigned long, nr_pages - migrated - collected, 32768UL));
         }
 
         if (!collected)

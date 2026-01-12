@@ -5784,11 +5784,7 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 	folio = vm_normal_folio(vma, vmf->address, pte);
 	if (!folio || folio_is_zone_device(folio))
 		goto out_map;
-	
-	//hayong
-	if(folio)
-		folio_coldcount_reset(folio);
-	
+
 	nid = folio_nid(folio);
 	nr_pages = folio_nr_pages(folio);
 

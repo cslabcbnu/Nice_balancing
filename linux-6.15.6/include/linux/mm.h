@@ -1436,7 +1436,7 @@ static inline bool folio_test_cold(struct folio *folio)
 
 static inline bool folio_test_cold_step(struct folio *folio, int step)
 {
-	return atomic_read(&folio->_coldcount) == step;
+	return atomic_read(&folio->_coldcount) >= step;
 }
 
 //hayong
