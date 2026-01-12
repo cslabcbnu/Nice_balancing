@@ -2428,7 +2428,17 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		if (is_huge_zero_pmd(*pmd))
 			goto unlock;
 
-		if (pmd_protnone(*pmd))
+		if (pmd_protnone(*pmd)) {
+			struct folio *folio = pmd_folio(*pmd);
+
+			if(folio){
+				int prev_count = folio_coldcount(folio);
+				folio_coldcount_inc(folio);
+
+				printk(KERN_INFO "[KNICE][THP-COLD] addr=0x%lx nid=%d count=%d->%d\n",
+                       addr, folio_nid(folio), prev_count, prev_count + 1);
+			}
+		}
 			goto unlock;
 
 		folio = pmd_folio(*pmd);

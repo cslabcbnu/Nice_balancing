@@ -125,15 +125,16 @@ static long change_pte_range(struct mmu_gather *tlb,
 				// hayong
 				if (pte_protnone(oldpte)) {
 					folio = vm_normal_folio(vma, addr, oldpte);
-					printk(KERN_INFO "[KNICE][PROTNONE DETECTED] addr=0x%lx\n",
-					       addr);
 
-					if (folio && folio_nid(folio) == 0) {
+					if (folio && !folio_test_ksm(folio)) {
+
 						int before = folio_coldcount(folio);
+
 						folio_coldcount_inc(folio);
+
 						int after = folio_coldcount(folio);
-						printk(KERN_INFO "[KNICE][PROTNONE HANDLED] addr=0x%lx nid=%d coldcount: %d -> %d\n",
-						       addr, folio_nid(folio), before, after);
+
+						printk(KERN_INFO "[KNICE][PROTNONE HANDLED] addr=0x%lx nid=%d coldcount: %d -> %d\n", addr, folio_nid(folio), before, after);
 						}
 						continue;
 					}
