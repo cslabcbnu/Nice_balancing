@@ -128,7 +128,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 					printk(KERN_INFO "[KNICE][PROTNONE DETECTED] addr=0x%lx\n",
 					       addr);
 
-					if (folio && folio_test_lru(folio) && folio_nid(folio) == 0) {
+					if (folio && folio_nid(folio) == 0) {
 						int before = folio_coldcount(folio);
 						folio_coldcount_inc(folio);
 						int after = folio_coldcount(folio);
