@@ -8024,7 +8024,7 @@ static int demote_worker_fn(void *arg)
 		sysctl_numa_balancing_scan_period_min = old_period;
 		sysctl_numa_balancing_scan_size = old_size;
 
-		knicedemoted_enabled = false
+		knicedemoted_enabled = false;
 
         /* 4. 하나의 요청 처리 완료 후 정리 */
         kfree(req);
