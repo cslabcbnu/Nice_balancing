@@ -1434,10 +1434,10 @@ static inline bool folio_test_cold(struct folio *folio)
     return atomic_read(&folio->_coldcount) >= KDEMOTE_COLD_THRESHOLD;
 }
 
-// static inline bool folio_test_cold_step(struct folio *folio, int step)
-// {
-// 	return atomic_read(&folio->_coldcount) >= step;
-// }
+static inline bool folio_test_cold_step(struct folio *folio, int step)
+{
+	return atomic_read(&folio->_coldcount) == step;
+}
 
 //hayong
 
