@@ -78,6 +78,7 @@ struct demote_node demote_nodes[2];
 bool knicedemoted_enabled = false;
 bool demote_enabled = false;
 EXPORT_SYMBOL(demote_enabled);
+#include <kernel/sched/sched.h>
 
 
 #define CREATE_TRACE_POINTS
@@ -7812,74 +7813,71 @@ static unsigned long scan_active_lruvec(struct lruvec *lruvec,
 {
     unsigned long collected = 0;
     struct folio *folio, *next;
-    unsigned long scanned = 0, cold_hit = 0;
     struct lru_gen_folio *lrugen = &lruvec->lrugen;
-    int type = 0;  /* anon */
+    int type = 0; /* anon */
     int zone;
-
+    
     if (!lrugen->enabled)
         return 0;
 
     spin_lock_irq(&lruvec->lru_lock);
 
     int max_gen = lru_gen_from_seq(lrugen->max_seq);
-    
-    /* 모든 세대 전체 스캔 + 점진적 threshold */
+    int min_gen = lru_gen_from_seq(lrugen->min_seq[type]);
+
+    /* * [개선된 전략] 
+     * 1. Threshold 루프를 밖으로 빼는 것은 유지하되, 
+     * 2. '성능'을 위해 한 세대 내에서 최대한 수집하도록 순서를 최적화합니다.
+     * 3. 현재 로그상 count가 2까지만 올라왔으므로, 루프가 결국 아래까지 내려가며 수집할 것입니다.
+     */
     for (int threshold = KDEMOTE_COLD_THRESHOLD; threshold >= 1; threshold--) {
-        bool found_this_threshold = false;
-        
-        /* 모든 gen 스캔 (max_gen부터 0까지) */
-        for (int gen = max_gen; gen >= 0; gen--) {
+        // [수정] max_gen(Active)부터 뒤지는 것은 유지합니다 (사용자님 의도)
+        for (int gen = max_gen; gen >= min_gen; gen--) {
             for (zone = 0; zone < MAX_NR_ZONES; zone++) {
                 struct list_head *head = &lrugen->folios[gen][type][zone];
-
-                if (list_empty(head))
-                    continue;
                 
                 list_for_each_entry_safe(folio, next, head, lru) {
-                    if (collected + folio_nr_pages(folio) > budget)
-                        goto unlock;
+                    if (collected >= budget) goto unlock;
 
-                    scanned++;
-
-                    /* 새 함수 사용 */
+                    /* * folio_test_cold_step(folio, threshold)가 
+                     * atomic_read(&folio->_coldcount) >= threshold 라면 
+                     * 현재 로그의 count=2 페이지들은 threshold=2 단계에서 모두 걸러집니다.
+                     */
                     if (folio_test_cold_step(folio, threshold)) {
-                        cold_hit++;
-                        found_this_threshold = true;
-                        
-                        printk(KERN_DEBUG "[KNICE][COLD T%d G%d] folio=%p count=%d\n", 
-                               threshold, gen, folio, atomic_read(&folio->_coldcount));
+                        if (folio_isolate_lru(folio)) {
+                            node_stat_mod_folio(folio, NR_ISOLATED_ANON, folio_nr_pages(folio));
+                            list_add(&folio->lru, isolated);
+                            collected += folio_nr_pages(folio);
+                        }
+                    }
+                }
+            }
+        }
+        // 이 threshold 단계에서 하나라도 건졌다면, 더 낮은 threshold로 내려가지 않고 즉시 migration 시도
+        if (collected > 0) goto unlock;
+    }
 
-                        if (!folio_isolate_lru(folio))
-                            continue;
-
-                        node_stat_mod_folio(folio, NR_ISOLATED_ANON,
-                                    folio_nr_pages(folio));
-
+    /* * [Fallback] 만약 어떤 coldcount(1~5)도 만족하는게 하나도 없다면?
+     * DRAM이 터지기 직전이므로 MGLRU 기준 가장 오래된 놈(min_gen)부터 강제 수집.
+     */
+    if (collected < budget) {
+        for (int gen = min_gen; gen <= max_gen; gen++) {
+            for (zone = 0; zone < MAX_NR_ZONES; zone++) {
+                struct list_head *head = &lrugen->folios[gen][type][zone];
+                list_for_each_entry_safe(folio, next, head, lru) {
+                    if (collected >= budget) goto unlock;
+                    if (folio_isolate_lru(folio)) {
+                        node_stat_mod_folio(folio, NR_ISOLATED_ANON, folio_nr_pages(folio));
                         list_add(&folio->lru, isolated);
                         collected += folio_nr_pages(folio);
                     }
                 }
             }
         }
-        
-        /* 첫 번째 threshold에서 못 찾으면 로그 */
-        if (!found_this_threshold && threshold == KDEMOTE_COLD_THRESHOLD) {
-            printk(KERN_INFO "[KNICE] No cold@%d, trying lower thresholds\n", 
-                   KDEMOTE_COLD_THRESHOLD);
-        }
-        
-        /* 충분히 모았으면 조기 종료 */
-        if (collected >= budget)
-            goto unlock;
     }
 
 unlock:
     spin_unlock_irq(&lruvec->lru_lock);
-
-    printk(KERN_INFO "[KNICE][SCAN] max_gen=%d scanned=%lu cold=%lu isolated=%lu\n",
-           max_gen, scanned, cold_hit, collected);
-
     return collected;
 }
 
@@ -7986,6 +7984,12 @@ static int demote_worker_fn(void *arg)
         unsigned long remaining = req->nr_pages;
         knicedemoted_enabled = true; // 마이그레이션 활성화 플래그
 
+		int old_period = sysctl_numa_balancing_scan_period_min;
+		int old_size = sysctl_numa_balancing_scan_size;
+
+		sysctl_numa_balancing_scan_period_min = 50;
+		sysctl_numa_balancing_scan_size = 1024;
+
         while (remaining > 0) 
         {
             /* 한 번에 처리할 배치 크기 결정 */
@@ -8014,6 +8018,11 @@ static int demote_worker_fn(void *arg)
 
             cond_resched(); // CPU 양보
         }
+
+		sysctl_numa_balancing_scan_period_min = old_period;
+		sysctl_numa_balancing_scan_size = old_size;
+
+		knicedemoted_enabled = false
 
         /* 4. 하나의 요청 처리 완료 후 정리 */
         kfree(req);
