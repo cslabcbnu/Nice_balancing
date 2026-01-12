@@ -81,7 +81,8 @@ EXPORT_SYMBOL(demote_enabled);
 #include <linux/sched.h>
 #include <linux/sched/sysctl.h>
 #include <linux/sched/numa_balancing.h>
-
+extern int sysctl_numa_balancing_scan_period_min;
+extern int sysctl_numa_balancing_scan_size;
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
