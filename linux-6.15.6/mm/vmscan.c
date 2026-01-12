@@ -78,7 +78,9 @@ struct demote_node demote_nodes[2];
 bool knicedemoted_enabled = false;
 bool demote_enabled = false;
 EXPORT_SYMBOL(demote_enabled);
-#include <kernel/sched/sched.h>
+#include <linux/sched.h>
+#include <linux/sched/sysctl.h>
+#include <linux/sched/numa_balancing.h>
 
 
 #define CREATE_TRACE_POINTS
