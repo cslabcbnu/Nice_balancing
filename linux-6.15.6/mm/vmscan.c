@@ -7905,8 +7905,7 @@ static ssize_t cold_balancing_store(struct kobject *kobj,
 }
 
 /* 3. 속성 정의 */
-static struct kobj_attribute cold_balancing_attr =
-	__ATTR(cold_balancing, 0644, cold_balancing_show, cold_balancing_store);
+static struct kobj_attribute cold_balancing_attr = __ATTR(cold_balancing, 0644, cold_balancing_show, cold_balancing_store);
 
 /* 4. 초기화 시점에 등록 (예: mm_sysfs_init 등 내부) */
 // numa_kobj는 보통 커널 내부에서 이미 생성되어 있습니다.
