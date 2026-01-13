@@ -1922,7 +1922,7 @@ static void numa_promotion_adjust_threshold(struct pglist_data *pgdat,
 #define CXL_NODE	1  // hayong
 
 extern int knice_aggression_level;
-extern int knicedemoted_enabled;
+extern bool knicedemoted_enabled;
 
 bool knice_should_demote(struct task_struct *p, struct folio *folio)
 {
