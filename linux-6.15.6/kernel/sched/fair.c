@@ -1923,47 +1923,60 @@ static void numa_promotion_adjust_threshold(struct pglist_data *pgdat,
 
 extern int knice_aggression_level;
 extern bool knicedemoted_enabled;
+extern int sysctl_knice_cold_balancing;
+
 
 bool knice_should_demote(struct task_struct *p, struct folio *folio)
 {
     int niceval = task_nice(p);
+    int cold_count = folio_coldcount(folio);
 
-    // 0. 기본 전제: DRAM에 있을 때만 내보냄
+    /* 0. 기능 활성화 체크 (사용자가 0으로 끄면 즉시 거부) */
+    if (sysctl_knice_cold_balancing == 0)
+        return false;
+
+    /* 1. 기본 전제: DRAM 노드에 있을 때만 내보냄 */
     if (!node_is_toptier(folio_nid(folio)))
         return false;
 
-    /* [KNICE] 공격성 레벨에 따른 동적 임계값 설정 (일반 모드 및 High-priority 태스크용) */
-    int req_coldcount = 5;               /* 기본: 5번 스캔될 동안 안 쓰임 */
-    unsigned long req_interval = 2 * HZ; /* 기본: 접근 간격 2초 이상 */
-    int req_latency = 1000;              /* 기본: Latency 1000ms 이상 */
-
-    if (knice_aggression_level == KNICE_LEVEL_BOOST) {
-        req_coldcount = 3;               /* 조금만 안 써도 내보냄 */
-        req_interval = 0;           /* 간격 기준 완화 */
-        req_latency = 0;               /* 반응이 조금 늦기만 해도 내보냄 */
-    } 
-    else if (knice_aggression_level == KNICE_LEVEL_URGENT) {
-        /* nice < 0 인 중요한 프로세스라도 URGENT 상황이면 기준을 대폭 낮춤 */
-        req_coldcount = 1;
-        req_interval = 0;
-        req_latency = 0;
+    /* [A] Urgent 모드 (워커가 깨어난 긴급 상황)
+     * - nice >= 0 인 일반 프로세스는 즉시 강등 타겟이 됨.
+     * - nice < 0 인 중요한 프로세스는 보호를 위해 아래의 깐깐한 필터로 보냄.
+     */
+    if (knice_aggression_level == KNICE_LEVEL_URGENT) {
+        if (niceval >= 0)
+            return true;
     }
 
-	if(niceval < 0)
-		return false;
+    /* [B] 사용자 설정 기반 필터링 (Normal / Boost) */
+    int req_coldcount;
+    unsigned long req_interval = 0;
+    int req_latency = 0;
 
-    // 1. 과거 이력(Coldness) 체크
-    if (!folio_test_cold(folio, req_coldcount))
+    if (sysctl_knice_cold_balancing == 2) { 
+        /* Boost 모드: 선제적 확보를 위해 기준 완화 */
+        req_coldcount = 3;
+    } else { 
+        /* Normal 모드: 성능 유지를 위해 보수적 기준 (Default) */
+        req_coldcount = 5;
+        req_interval = 2 * HZ;
+        req_latency = 1000;
+    }
+
+    /* [C] 중요 프로세스 최종 보호막 */
+    /* URGENT 상황이 아닐 때 nice < 0 인 태스크는 절대로 강등시키지 않음 */
+    if (niceval < 0)
         return false;
 
-    // 2. 태스크 접근 주기 체크
+    /* [D] 하드웨어/이력 기반 필터링 */
+    if (cold_count < req_coldcount)
+        return false;
+
     if (p->knice_avg_interval <= req_interval)
         return false;
 
-    // 3. 현재 접근의 긴급성(Latency) 체크
     if (folio_use_access_time(folio)) {
-        int latency = numa_hint_fault_latency(folio);
-        if (latency < req_latency)
+        if (numa_hint_fault_latency(folio) < req_latency)
             return false;
     }
 

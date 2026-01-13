@@ -938,6 +938,35 @@ bool numa_demotion_enabled = false;
 
 #ifdef CONFIG_MIGRATION
 #ifdef CONFIG_SYSFS
+int sysctl_knice_cold_balancing = 1;  /* 0:Off, 1:Normal, 2:Boost */
+
+static ssize_t cold_balancing_show(struct kobject *kobj,
+                                   struct kobj_attribute *attr, char *buf)
+{
+    return sysfs_emit(buf, "%d\n", sysctl_knice_cold_balancing);
+}
+
+static ssize_t cold_balancing_store(struct kobject *kobj,
+                                    struct kobj_attribute *attr,
+                                    const char *buf, size_t count)
+{
+    int val;
+    int ret;
+
+    ret = kstrtoint(buf, 10, &val);
+    if (ret)
+        return ret;
+
+    if (val < 0 || val > 2)
+        return -EINVAL;
+
+    sysctl_knice_cold_balancing = val;
+    return count;
+}
+
+static struct kobj_attribute cold_balancing_attr =
+    __ATTR_RW(cold_balancing);
+
 static ssize_t demotion_enabled_show(struct kobject *kobj,
 				     struct kobj_attribute *attr, char *buf)
 {
@@ -961,9 +990,11 @@ static struct kobj_attribute numa_demotion_enabled_attr =
 	__ATTR_RW(demotion_enabled);
 
 static struct attribute *numa_attrs[] = {
-	&numa_demotion_enabled_attr.attr,
-	NULL,
+    &numa_demotion_enabled_attr.attr,
+    &cold_balancing_attr.attr,    /* ← 이 한 줄만 추가 */
+    NULL,
 };
+
 
 static const struct attribute_group numa_attr_group = {
 	.attrs = numa_attrs,

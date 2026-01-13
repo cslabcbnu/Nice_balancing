@@ -7749,6 +7749,8 @@ atomic_long_t knice_migrated_count = ATOMIC_LONG_INIT(0);
 EXPORT_SYMBOL(knice_migrated_count);
 int knice_aggression_level = 0;
 EXPORT_SYMBOL(knice_aggression_level);
+extern int sysctl_knice_cold_balancing;
+
 
 static int demote_worker_fn(void *arg)
 {
@@ -7879,37 +7881,3 @@ static int __init knicedemoted_init(void)
     return 0;
 }
 late_initcall(knicedemoted_init);
-
-/* 1. 변수 정의 (0: Off, 1: Normal, 2: Boost) */
-int sysctl_knice_cold_balancing = 1;
-
-/* 2. Show & Store 함수 (파일 읽기/쓰기 정의) */
-static ssize_t cold_balancing_show(struct kobject *kobj,
-				  struct kobj_attribute *attr, char *buf)
-{
-	return sprintf(buf, "%d\n", sysctl_knice_cold_balancing);
-}
-
-static ssize_t cold_balancing_store(struct kobject *kobj,
-				   struct kobj_attribute *attr,
-				   const char *buf, size_t count)
-{
-	int val;
-	if (kstrtoint(buf, 10, &val) < 0)
-		return -EINVAL;
-	if (val < 0 || val > 2)
-		return -EINVAL;
-
-	sysctl_knice_cold_balancing = val;
-	return count;
-}
-
-/* 3. 속성 정의 */
-static struct kobj_attribute cold_balancing_attr = __ATTR(cold_balancing, 0644, cold_balancing_show, cold_balancing_store);
-
-/* 4. 초기화 시점에 등록 (예: mm_sysfs_init 등 내부) */
-// numa_kobj는 보통 커널 내부에서 이미 생성되어 있습니다.
-// 그 아래에 cold_balancing 파일을 추가합니다.
-if (sysfs_create_file(numa_kobj, &cold_balancing_attr.attr)) {
-    pr_err("KNICE: Failed to create cold_balancing sysfs file\n");
-}
