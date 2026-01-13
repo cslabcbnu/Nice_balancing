@@ -2806,6 +2806,8 @@ static void sp_free(struct sp_node *n)
  * Return: NUMA_NO_NODE if the page is in a node that is valid for this
  * policy, or a suitable node ID to allocate a replacement folio from.
  */
+
+ #define CXL_NODE  1  // Define CXL_NODE as -1 for demonstration purposes
 int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 		   unsigned long addr)
 {

@@ -7762,7 +7762,7 @@ static int demote_worker_fn(void *arg)
         struct demote_request *req, *tmp;
         unsigned long total_remaining = 0;
         unsigned long start_time;
-        int stall_count = 0; // 마이그레이션 진전이 없는 횟수
+
 
         wait_event_interruptible(dn->wq, 
             !list_empty(&dn->request_queue) || kthread_should_stop());
@@ -7785,15 +7785,15 @@ static int demote_worker_fn(void *arg)
         int old_size = sysctl_numa_balancing_scan_size;
 
         sysctl_numa_balancing_scan_period_min = 50; 
-        sysctl_numa_balancing_scan_size = 4096;
+        sysctl_numa_balancing_scan_size = 1024;
         knice_aggression_level = KNICE_LEVEL_URGENT;
         knicedemoted_enabled = true;
 
         start_time = jiffies;
-		unsigned long deadline = jiffies + msecs_to_jiffies(15000);
+		unsigned long deadline = jiffies + msecs_to_jiffies(10000);
         printk(KERN_INFO "[KNICE-WORKER] MISSION START: Total %lu pages until Done.\n", total_remaining);
 
-        while (total_remaining > 0 && !kthread_should_stop()) {
+        while (total_remaining > 0 && !time_before(jiffies, deadline)) {
 
 			if (time_after(jiffies, deadline)) {
                 printk(KERN_WARNING "[KNICE-WORKER] MISSION YIELD: Timeout reached to protect workload.\n");
@@ -7809,12 +7809,9 @@ static int demote_worker_fn(void *arg)
                 atomic_long_add(migrated, &dn->demoted_pages);
                 
                 printk(KERN_INFO "[KNICE-WORKER] Progress: -%lu | Left: %lu\n", migrated, total_remaining);
-				deadline += msecs_to_jiffies(1000);
-                stall_count = 0;
-            } else {
-                stall_count++;
-            }
+				deadline = jiffies + msecs_to_jiffies(3000);
 
+			}
             /* 중간에 새로운 요청이 들어오면 계속 추가 */
             if (!list_empty(&dn->request_queue)) {
                 spin_lock(&dn->lock);
@@ -7827,13 +7824,16 @@ static int demote_worker_fn(void *arg)
                 printk(KERN_INFO "[KNICE-WORKER] Mission Extended: New pages added.\n");
             }
 
-            if (stall_count > 100) {
-                printk(KERN_WARNING "[KNICE-WORKER] MISSION STALLED: No progress. Exit.\n");
-                break;
-            }
-
-            msleep(300); 
+            msleep(200); 
             cond_resched();
+        }
+
+		if (total_remaining == 0) {
+            printk(KERN_INFO "[KNICE-WORKER] BATCH SUCCESS: All requests fulfilled. Time: %u ms\n", 
+                   jiffies_to_msecs(jiffies - start_time));
+        } else {
+            printk(KERN_WARNING "[KNICE-WORKER] BATCH TIMEOUT: %lu pages left in DRAM\n", total_remaining);
+            atomic_long_sub(total_remaining, &dn->pending_pages);
         }
 
         /* 4. 복구 */
