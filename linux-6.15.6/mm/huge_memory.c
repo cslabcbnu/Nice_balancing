@@ -2435,8 +2435,8 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 				int prev_count = folio_coldcount(folio);
 				folio_coldcount_inc(folio);
 
-				printk(KERN_INFO "[KNICE][THP-COLD] addr=0x%lx nid=%d count=%d->%d\n",
-                       addr, folio_nid(folio), prev_count, prev_count + 1);
+				// printk(KERN_INFO "[KNICE][THP-COLD] addr=0x%lx nid=%d count=%d->%d\n",
+                //        addr, folio_nid(folio), prev_count, prev_count + 1);
 			}
 		}
 			goto unlock;

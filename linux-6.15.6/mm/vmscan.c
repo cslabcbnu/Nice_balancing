@@ -7754,9 +7754,7 @@ static int demote_worker_fn(void *arg)
 {
     int src_nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[src_nid];
-    int dst_nid = CXL_NODE_ID;
 
-    /* 워커의 우선순위를 높여 정책 적용 지연 최소화 */
     set_user_nice(current, -1);
 
     while (!kthread_should_stop()) 
@@ -7769,7 +7767,7 @@ static int demote_worker_fn(void *arg)
 
         if (kthread_should_stop()) break;
         
-        /* 2. 요청 인출 (FIFO) */
+        /* 2. 요청 인출 */
         spin_lock(&dn->lock);
         if (!list_empty(&dn->request_queue)) {
             req = list_first_entry(&dn->request_queue, struct demote_request, list);
@@ -7780,22 +7778,28 @@ static int demote_worker_fn(void *arg)
 
         if (!req) continue;
 
-        /* 3. 정책 가속 및 공격성 강화 */
+        printk(KERN_INFO "[KNICE-WORKER] START: PID=%d, Target=%lu pages\n", 
+               req->requester_pid, req->nr_pages);
+
+        /* 기존 설정 백업 */
         int old_period = sysctl_numa_balancing_scan_period_min;
         int old_size = sysctl_numa_balancing_scan_size;
 
-        sysctl_numa_balancing_scan_period_min = 50;   /* 스캔 주기 가속 */
-        sysctl_numa_balancing_scan_size = 1024;       /* 스캔 범위 확대 */
-        knice_aggression_level = KNICE_LEVEL_BOOST;
+        /* 3. 즉시 URGENT 모드 및 시스템 가속 적용 */
+        sysctl_numa_balancing_scan_period_min = 50; 
+        sysctl_numa_balancing_scan_size = 1024;
+        knice_aggression_level = KNICE_LEVEL_URGENT; // 무조건 URGENT
         knicedemoted_enabled = true;
 
-        unsigned long remaining = req->nr_pages;
-        unsigned long timeout = jiffies + msecs_to_jiffies(5000); // 최대 5초 대기
+        printk(KERN_INFO "[KNICE-WORKER] Mode: URGENT Activated. Scan Period: 50ms\n");
 
-        /* 4. 관찰 루프: do_numa_page가 목표치를 채울 때까지 정책 유지 */
+        unsigned long remaining = req->nr_pages;
+        unsigned long start_time = jiffies;
+        unsigned long timeout = jiffies + msecs_to_jiffies(5000); 
+
+        /* 4. 관찰 루프 */
         while (remaining > 0 && time_before(jiffies, timeout)) {
             
-            /* do_numa_page가 성공시킨 CXL 마이그레이션 수 획득 및 초기화 */
             unsigned long migrated = atomic_long_xchg(&knice_migrated_count, 0);
 
             if (migrated > 0) {
@@ -7805,34 +7809,38 @@ static int demote_worker_fn(void *arg)
                     remaining -= migrated;
                 }
                 
-                /* 시스템 전역 통계 업데이트 */
                 atomic_long_sub(migrated, &dn->pending_pages);
                 atomic_long_add(migrated, &dn->demoted_pages);
                 
-                // 새로운 진행 상황이 있으면 타임아웃 갱신 (선택 사항)
+                printk(KERN_INFO "[KNICE-WORKER] Migrated: %lu | Remaining: %lu\n", 
+                       migrated, remaining);
+
+                /* 진전이 있으면 타임아웃 2초 연장 */
                 timeout = jiffies + msecs_to_jiffies(2000);
             }
 
-            /* 2GB 이상 대량 요청 시 공격성 레벨 격상 */
-            if (remaining > 524288)
-                knice_aggression_level = KNICE_LEVEL_URGENT;
-            else
-                knice_aggression_level = KNICE_LEVEL_BOOST;
+            /* 루프 내에서 레벨 유지 (혹시 모를 변경 방지) */
+            knice_aggression_level = KNICE_LEVEL_URGENT;
 
-            msleep(100); 
+            msleep(200); 
             cond_resched();
         }
 
-        /* 5. 정책 원복 및 정리 */
+        /* 5. 결과 보고 및 정책 원복 */
+        if (remaining == 0) {
+            printk(KERN_INFO "[KNICE-WORKER] SUCCESS: Target reached. Time: %u ms\n", 
+                   jiffies_to_msecs(jiffies - start_time));
+        } else {
+            printk(KERN_WARNING "[KNICE-WORKER] FAIL: Timeout. Left: %lu pages\n", remaining);
+            atomic_long_sub(remaining, &dn->pending_pages);
+        }
+
         sysctl_numa_balancing_scan_period_min = old_period;
         sysctl_numa_balancing_scan_size = old_size;
         knice_aggression_level = KNICE_LEVEL_NORMAL;
         knicedemoted_enabled = false;
 
-        /* 남은 pending_pages가 있다면(타임아웃 등) 보정 */
-        if (remaining > 0) {
-            atomic_long_sub(remaining, &dn->pending_pages);
-        }
+        printk(KERN_INFO "[KNICE-WORKER] Mode: NORMAL Restored.\n");
 
         kfree(req);
         
