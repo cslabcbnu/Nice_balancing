@@ -7783,15 +7783,20 @@ static int demote_worker_fn(void *arg)
         int old_size = sysctl_numa_balancing_scan_size;
 
         sysctl_numa_balancing_scan_period_min = 50; 
-        sysctl_numa_balancing_scan_size = 4096; // 화력을 4배로 강화 (1024 -> 4096)
+        sysctl_numa_balancing_scan_size = 4096;
         knice_aggression_level = KNICE_LEVEL_URGENT;
         knicedemoted_enabled = true;
 
         start_time = jiffies;
+		unsigned long deadline = jiffies + msecs_to_jiffies(15000);
         printk(KERN_INFO "[KNICE-WORKER] MISSION START: Total %lu pages until Done.\n", total_remaining);
 
-        /* 3. 관찰 루프 (타임아웃 조건 제거) */
         while (total_remaining > 0 && !kthread_should_stop()) {
+
+			if (time_after(jiffies, deadline)) {
+                printk(KERN_WARNING "[KNICE-WORKER] MISSION YIELD: Timeout reached to protect workload.\n");
+                break;
+            }
             
             unsigned long migrated = atomic_long_xchg(&knice_migrated_count, 0);
 
@@ -7802,7 +7807,8 @@ static int demote_worker_fn(void *arg)
                 atomic_long_add(migrated, &dn->demoted_pages);
                 
                 printk(KERN_INFO "[KNICE-WORKER] Progress: -%lu | Left: %lu\n", migrated, total_remaining);
-                stall_count = 0; // 진전이 있으니 카운트 리셋
+				deadline += msecs_to_jiffies(1000);
+                stall_count = 0;
             } else {
                 stall_count++;
             }
@@ -7819,14 +7825,12 @@ static int demote_worker_fn(void *arg)
                 printk(KERN_INFO "[KNICE-WORKER] Mission Extended: New pages added.\n");
             }
 
-            /* [안전장치] 만약 1분(200ms * 300) 동안 단 한 페이지도 이동하지 않았다면?
-             * 더 이상 강등할 페이지가 없거나 시스템이 꼬인 상황으로 판단하고 탈출. */
-            if (stall_count > 300) {
-                printk(KERN_WARNING "[KNICE-WORKER] MISSION STALLED: No progress for 60s. Force exit.\n");
+            if (stall_count > 100) {
+                printk(KERN_WARNING "[KNICE-WORKER] MISSION STALLED: No progress. Exit.\n");
                 break;
             }
 
-            msleep(200); 
+            msleep(300); 
             cond_resched();
         }
 
@@ -7875,3 +7879,38 @@ static int __init knicedemoted_init(void)
     return 0;
 }
 late_initcall(knicedemoted_init);
+
+/* 1. 변수 정의 (0: Off, 1: Normal, 2: Boost) */
+int sysctl_knice_cold_balancing = 1;
+
+/* 2. Show & Store 함수 (파일 읽기/쓰기 정의) */
+static ssize_t cold_balancing_show(struct kobject *kobj,
+				  struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", sysctl_knice_cold_balancing);
+}
+
+static ssize_t cold_balancing_store(struct kobject *kobj,
+				   struct kobj_attribute *attr,
+				   const char *buf, size_t count)
+{
+	int val;
+	if (kstrtoint(buf, 10, &val) < 0)
+		return -EINVAL;
+	if (val < 0 || val > 2)
+		return -EINVAL;
+
+	sysctl_knice_cold_balancing = val;
+	return count;
+}
+
+/* 3. 속성 정의 */
+static struct kobj_attribute cold_balancing_attr =
+	__ATTR(cold_balancing, 0644, cold_balancing_show, cold_balancing_store);
+
+/* 4. 초기화 시점에 등록 (예: mm_sysfs_init 등 내부) */
+// numa_kobj는 보통 커널 내부에서 이미 생성되어 있습니다.
+// 그 아래에 cold_balancing 파일을 추가합니다.
+if (sysfs_create_file(numa_kobj, &cold_balancing_attr.attr)) {
+    pr_err("KNICE: Failed to create cold_balancing sysfs file\n");
+}

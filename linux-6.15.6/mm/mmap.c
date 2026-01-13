@@ -318,7 +318,7 @@ static void handle_nice_balancing(unsigned long len)
 
     if (nice_val < 0) {
         /* VIP: DRAM 공간 확보 요청 */
-		//printk(KERN_INFO "[KNICE-VIP] VIP detected! Enqueueing request for PID %d, pages = %lu", current->pid, nr_pages);
+		printk(KERN_INFO "[KNICE-VIP] VIP detected! Enqueueing request for PID %d, pages = %lu", current->pid, nr_pages);
         enqueue_demote_request(dn, nr_pages, current->pid);
     }
 }
