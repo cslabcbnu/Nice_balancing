@@ -7747,6 +7747,8 @@ EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
  /* 전역 변수 선언 */
 atomic_long_t knice_migrated_count = ATOMIC_LONG_INIT(0);
 EXPORT_SYMBOL(knice_migrated_count);
+int knice_aggression_level = 0;
+EXPORT_SYMBOL(knice_aggression_level);
 
 static int demote_worker_fn(void *arg)
 {
