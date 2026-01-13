@@ -1921,6 +1921,9 @@ static void numa_promotion_adjust_threshold(struct pglist_data *pgdat,
 
 #define CXL_NODE	1  // hayong
 
+extern int knice_aggression_level;
+extern int knicedemoted_enabled;
+
 bool knice_should_demote(struct task_struct *p, struct folio *folio)
 {
     int niceval = task_nice(p);
@@ -1929,25 +1932,15 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
     if (!node_is_toptier(folio_nid(folio)))
         return false;
 
-    /* * [KNICE] 긴급 모드 특수 정책 
-     * URGENT 상태에서 nice >= 0 인 프로세스의 페이지는 
-     * 복잡한 검사 없이 무조건 Cold로 간주하여 밀어냄.
-     */
-    if (knice_aggression_level == KNICE_LEVEL_URGENT && niceval >= 0) {
-        // [선택 사항] 로그가 너무 많이 찍힐 수 있으므로 주의
-        // printk_ratelimited(KERN_INFO "[KNICE-URGENT] Instant demote for PID %d (nice %d)\n", p->pid, niceval);
-        return true; 
-    }
-
     /* [KNICE] 공격성 레벨에 따른 동적 임계값 설정 (일반 모드 및 High-priority 태스크용) */
     int req_coldcount = 5;               /* 기본: 5번 스캔될 동안 안 쓰임 */
     unsigned long req_interval = 2 * HZ; /* 기본: 접근 간격 2초 이상 */
     int req_latency = 1000;              /* 기본: Latency 1000ms 이상 */
 
     if (knice_aggression_level == KNICE_LEVEL_BOOST) {
-        req_coldcount = 2;               /* 조금만 안 써도 내보냄 */
-        req_interval = 1 * HZ;           /* 간격 기준 완화 */
-        req_latency = 500;               /* 반응이 조금 늦기만 해도 내보냄 */
+        req_coldcount = 3;               /* 조금만 안 써도 내보냄 */
+        req_interval = 0;           /* 간격 기준 완화 */
+        req_latency = 0;               /* 반응이 조금 늦기만 해도 내보냄 */
     } 
     else if (knice_aggression_level == KNICE_LEVEL_URGENT) {
         /* nice < 0 인 중요한 프로세스라도 URGENT 상황이면 기준을 대폭 낮춤 */
@@ -1955,6 +1948,9 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
         req_interval = 0;
         req_latency = 0;
     }
+
+	if(niceval < 0)
+		return false;
 
     // 1. 과거 이력(Coldness) 체크
     if (!folio_test_cold(folio, req_coldcount))

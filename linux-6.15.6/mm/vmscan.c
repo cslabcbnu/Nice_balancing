@@ -7754,100 +7754,104 @@ static int demote_worker_fn(void *arg)
 {
     int src_nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[src_nid];
-
     set_user_nice(current, -1);
 
-    while (!kthread_should_stop()) 
-    {
-        struct demote_request *req = NULL;
+    while (!kthread_should_stop()) {
+        struct demote_request *req, *tmp;
+        unsigned long total_remaining = 0;
+        unsigned long start_time;
 
         /* 1. 요청 대기 */
         wait_event_interruptible(dn->wq, 
             !list_empty(&dn->request_queue) || kthread_should_stop());
 
         if (kthread_should_stop()) break;
-        
-        /* 2. 요청 인출 */
+
+        /* 2. 큐에 쌓인 모든 요청을 합산하고 리스트 비우기 (Batching) */
         spin_lock(&dn->lock);
-        if (!list_empty(&dn->request_queue)) {
-            req = list_first_entry(&dn->request_queue, struct demote_request, list);
+        list_for_each_entry_safe(req, tmp, &dn->request_queue, list) {
+            total_remaining += req->nr_pages;
             list_del(&req->list);
-            dn->current_owner_pid = req->requester_pid;
+            kfree(req); // 개별 요청 객체는 여기서 해제
         }
+        // 마지막 요청자의 PID를 대표로 기록하거나 0으로 초기화
+        dn->current_owner_pid = 0; 
         spin_unlock(&dn->lock);
 
-        if (!req) continue;
+        if (total_remaining == 0) continue;
 
-        printk(KERN_INFO "[KNICE-WORKER] START: PID=%d, Target=%lu pages\n", 
-               req->requester_pid, req->nr_pages);
+        printk(KERN_INFO "[KNICE-WORKER] BATCH START: Total Target=%lu pages\n", total_remaining);
 
         /* 기존 설정 백업 */
         int old_period = sysctl_numa_balancing_scan_period_min;
         int old_size = sysctl_numa_balancing_scan_size;
 
-        /* 3. 즉시 URGENT 모드 및 시스템 가속 적용 */
+        /* 3. 시스템 가속 및 URGENT 모드 진입 */
         sysctl_numa_balancing_scan_period_min = 50; 
         sysctl_numa_balancing_scan_size = 1024;
-        knice_aggression_level = KNICE_LEVEL_URGENT; // 무조건 URGENT
+        knice_aggression_level = KNICE_LEVEL_URGENT;
         knicedemoted_enabled = true;
 
-        printk(KERN_INFO "[KNICE-WORKER] Mode: URGENT Activated. Scan Period: 50ms\n");
+        start_time = jiffies;
+        unsigned long timeout = jiffies + msecs_to_jiffies(10000); // 양이 많을 수 있으니 기본 10초
 
-        unsigned long remaining = req->nr_pages;
-        unsigned long start_time = jiffies;
-        unsigned long timeout = jiffies + msecs_to_jiffies(5000); 
-
-        /* 4. 관찰 루프 */
-        while (remaining > 0 && time_before(jiffies, timeout)) {
+        /* 4. 관찰 루프: 모든 요청량이 소모될 때까지 유지 */
+        while (total_remaining > 0 && time_before(jiffies, timeout)) {
             
             unsigned long migrated = atomic_long_xchg(&knice_migrated_count, 0);
 
             if (migrated > 0) {
-                if (migrated >= remaining) {
-                    remaining = 0;
-                } else {
-                    remaining -= migrated;
-                }
+                if (migrated >= total_remaining)
+                    total_remaining = 0;
+                else
+                    total_remaining -= migrated;
                 
                 atomic_long_sub(migrated, &dn->pending_pages);
                 atomic_long_add(migrated, &dn->demoted_pages);
                 
-                printk(KERN_INFO "[KNICE-WORKER] Migrated: %lu | Remaining: %lu\n", 
-                       migrated, remaining);
+                printk(KERN_INFO "[KNICE-WORKER] Batch Progress: Migrated=%lu | Remaining=%lu\n", 
+                       migrated, total_remaining);
 
-                /* 진전이 있으면 타임아웃 2초 연장 */
-                timeout = jiffies + msecs_to_jiffies(2000);
+                /* 진전이 있으면 타임아웃 계속 연장 (활동 중임이 증명됨) */
+                timeout = jiffies + msecs_to_jiffies(3000);
             }
 
-            /* 루프 내에서 레벨 유지 (혹시 모를 변경 방지) */
-            knice_aggression_level = KNICE_LEVEL_URGENT;
+            /* 루프 도중 추가로 들어온 요청이 있는지 체크 (선택 사항) */
+            if (!list_empty(&dn->request_queue)) {
+                spin_lock(&dn->lock);
+                list_for_each_entry_safe(req, tmp, &dn->request_queue, list) {
+                    total_remaining += req->nr_pages;
+                    list_del(&req->list);
+                    kfree(req);
+                }
+                spin_unlock(&dn->lock);
+                printk(KERN_INFO "[KNICE-WORKER] New requests added to current batch.\n");
+            }
 
             msleep(200); 
             cond_resched();
         }
 
         /* 5. 결과 보고 및 정책 원복 */
-        if (remaining == 0) {
-            printk(KERN_INFO "[KNICE-WORKER] SUCCESS: Target reached. Time: %u ms\n", 
+        if (total_remaining == 0) {
+            printk(KERN_INFO "[KNICE-WORKER] BATCH SUCCESS: All requests fulfilled. Time: %u ms\n", 
                    jiffies_to_msecs(jiffies - start_time));
         } else {
-            printk(KERN_WARNING "[KNICE-WORKER] FAIL: Timeout. Left: %lu pages\n", remaining);
-            atomic_long_sub(remaining, &dn->pending_pages);
+            printk(KERN_WARNING "[KNICE-WORKER] BATCH TIMEOUT: %lu pages left in DRAM\n", total_remaining);
+            atomic_long_sub(total_remaining, &dn->pending_pages);
         }
 
+        /* 원복 */
         sysctl_numa_balancing_scan_period_min = old_period;
         sysctl_numa_balancing_scan_size = old_size;
         knice_aggression_level = KNICE_LEVEL_NORMAL;
         knicedemoted_enabled = false;
 
-        printk(KERN_INFO "[KNICE-WORKER] Mode: NORMAL Restored.\n");
+        printk(KERN_INFO "[KNICE-WORKER] BATCH FINISHED: Mode NORMAL Restored.\n");
 
-        kfree(req);
-        
         spin_lock(&dn->lock);
         if (list_empty(&dn->request_queue)) {
             atomic_set(&dn->in_progress, 0);
-            dn->current_owner_pid = 0;
         }
         spin_unlock(&dn->lock);
     }

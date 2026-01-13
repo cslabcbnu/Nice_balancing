@@ -282,18 +282,6 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 
 //hayong
 
-static void set_preferred_node_for_current(int nid)
-{
-    nodemask_t nodes;
-    nodes_clear(nodes);
-    node_set(nid, nodes);
-
-    if (kernel_set_task_preferred_node(current, nid) < 0)
-        printk(KERN_ERR "[DEMOTE] Failed to set preferred node %d\n", nid);
-    else
-        printk(KERN_INFO "[DEMOTE] Preferred node for current task set to %d\n", nid);
-}
-
 /* VIP 프로세스의 마이그레이션 요청을 큐에 삽입하는 헬퍼 함수 */
 static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_pages, pid_t pid)
 {
@@ -332,11 +320,6 @@ static void handle_nice_balancing(unsigned long len)
         /* VIP: DRAM 공간 확보 요청 */
 		//printk(KERN_INFO "[KNICE-VIP] VIP detected! Enqueueing request for PID %d, pages = %lu", current->pid, nr_pages);
         enqueue_demote_request(dn, nr_pages, current->pid);
-    } else {
-        /* 일반: 작업 중이면 CXL로 회피 */
-        if (atomic_read(&dn->in_progress)) {
-            set_preferred_node_for_current(CXL_NODE_ID);
-        }
     }
 }
 
