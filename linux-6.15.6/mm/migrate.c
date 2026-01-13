@@ -2641,7 +2641,7 @@ static struct folio *alloc_misplaced_dst_folio(struct folio *src,
  * permitted. Must be called with the PTL still held.
  */
 int migrate_misplaced_folio_prepare(struct folio *folio,
-		struct vm_area_struct *vma, int node)
+		struct vm_area_struct *vma, int node, int cxl_flag)
 {
 	int nr_pages = folio_nr_pages(folio);
 	pg_data_t *pgdat = NODE_DATA(node);

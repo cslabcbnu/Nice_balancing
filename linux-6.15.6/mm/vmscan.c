@@ -7743,236 +7743,31 @@ EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
  * - reclaim / AutoNUMA 와 철학적으로 분리
  */
 
-static struct folio *alloc_misplaced_dst_folio(struct folio *src,
-					   unsigned long data)
-{
-	int nid = (int) data;
-	int order = folio_order(src);
-	gfp_t gfp = __GFP_THISNODE;
 
-	if (order > 0)
-		gfp |= GFP_TRANSHUGE_LIGHT;
-	else {
-		gfp |= GFP_HIGHUSER_MOVABLE | __GFP_NOMEMALLOC | __GFP_NORETRY |
-			__GFP_NOWARN;
-		gfp &= ~__GFP_RECLAIM;
-	}
-	return __folio_alloc_node(gfp, order, nid);
-}
-
-static int demote_folio_prepare(struct folio *folio, int dst_nid)
-{
-	// int nr_pages = folio_nr_pages(folio);
-	// pg_data_t *pgdat = NODE_DATA(dst_nid);
-
-	if (folio_test_writeback(folio))
-		return -EAGAIN;
-
-	if (folio_test_mlocked(folio))
-		return -EACCES;
-
-	if (folio_is_file_lru(folio) && folio_test_dirty(folio))
-		return -EAGAIN;
-
-	// if (!migrate_balanced_pgdat(pgdat, nr_pages))
-	// 	return -EAGAIN;
-
-	return 0;
-}
-
-static unsigned long migrate_demoted_folios(struct list_head *list, int dst_nid)
-{
-	unsigned int nr_succeeded = 0;
-	unsigned int nr_failed = 0;
-
-	if (list_empty(list))
-		return 0;
-
-	migrate_pages(list,
-		      alloc_misplaced_dst_folio,
-		      NULL,
-		      dst_nid,
-		      MIGRATE_ASYNC,
-		      MR_KDEMOTED,
-		      &nr_succeeded);
-
-	nr_failed = 0;
-    struct list_head *pos, *n;
-    list_for_each_safe(pos, n, list) {
-		nr_failed += folio_nr_pages(list_entry(pos, struct folio, lru));
-	}
-        
-	printk(KERN_INFO "[KNICE][MIG] succ=%u fail=%u total=%u dst=%d\n", 
-           nr_succeeded, nr_failed, nr_succeeded + nr_failed, dst_nid);
-
-	if (!list_empty(list))
-		putback_movable_pages(list);
-
-	return nr_succeeded;
-}
-
-static unsigned long scan_active_lruvec(struct lruvec *lruvec,
-                    struct list_head *isolated,
-                    unsigned long budget)
-{
-    unsigned long collected = 0;
-    struct folio *folio, *next;
-    struct lru_gen_folio *lrugen = &lruvec->lrugen;
-    int type = 0; /* anon */
-    int zone;
-    
-    if (!lrugen->enabled)
-        return 0;
-
-    spin_lock_irq(&lruvec->lru_lock);
-
-    int max_gen = lru_gen_from_seq(lrugen->max_seq);
-    int min_gen = lru_gen_from_seq(lrugen->min_seq[type]);
-
-    /* * [개선된 전략] 
-     * 1. Threshold 루프를 밖으로 빼는 것은 유지하되, 
-     * 2. '성능'을 위해 한 세대 내에서 최대한 수집하도록 순서를 최적화합니다.
-     * 3. 현재 로그상 count가 2까지만 올라왔으므로, 루프가 결국 아래까지 내려가며 수집할 것입니다.
-     */
-    for (int threshold = KDEMOTE_COLD_THRESHOLD; threshold >= 1; threshold--) {
-        // [수정] max_gen(Active)부터 뒤지는 것은 유지합니다 (사용자님 의도)
-        for (int gen = max_gen; gen >= min_gen; gen--) {
-            for (zone = 0; zone < MAX_NR_ZONES; zone++) {
-                struct list_head *head = &lrugen->folios[gen][type][zone];
-                
-                list_for_each_entry_safe(folio, next, head, lru) {
-                    if (collected >= budget) goto unlock;
-
-                    /* * folio_test_cold_step(folio, threshold)가 
-                     * atomic_read(&folio->_coldcount) >= threshold 라면 
-                     * 현재 로그의 count=2 페이지들은 threshold=2 단계에서 모두 걸러집니다.
-                     */
-                    if (folio_test_cold_step(folio, threshold)) {
-                        if (folio_isolate_lru(folio)) {
-                            node_stat_mod_folio(folio, NR_ISOLATED_ANON, folio_nr_pages(folio));
-                            list_add(&folio->lru, isolated);
-                            collected += folio_nr_pages(folio);
-                        }
-                    }
-                }
-            }
-        }
-        // 이 threshold 단계에서 하나라도 건졌다면, 더 낮은 threshold로 내려가지 않고 즉시 migration 시도
-        if (collected > 0) goto unlock;
-    }
-
-    /* * [Fallback] 만약 어떤 coldcount(1~5)도 만족하는게 하나도 없다면?
-     * DRAM이 터지기 직전이므로 MGLRU 기준 가장 오래된 놈(min_gen)부터 강제 수집.
-     */
-    if (collected < budget) {
-        for (int gen = min_gen; gen <= max_gen; gen++) {
-            for (zone = 0; zone < MAX_NR_ZONES; zone++) {
-                struct list_head *head = &lrugen->folios[gen][type][zone];
-                list_for_each_entry_safe(folio, next, head, lru) {
-                    if (collected >= budget) goto unlock;
-                    if (folio_isolate_lru(folio)) {
-                        node_stat_mod_folio(folio, NR_ISOLATED_ANON, folio_nr_pages(folio));
-                        list_add(&folio->lru, isolated);
-                        collected += folio_nr_pages(folio);
-                    }
-                }
-            }
-        }
-    }
-
-unlock:
-    spin_unlock_irq(&lruvec->lru_lock);
-    return collected;
-}
-
-static unsigned long try_to_demote_pages(unsigned long nr_pages, int dst_nid)
-{
-    unsigned long migrated = 0;
-    pg_data_t *pgdat = NODE_DATA(DRAM_NODE_ID);
-    int zid;
-
-    while (migrated < nr_pages) {
-        LIST_HEAD(isolated);
-        LIST_HEAD(migrate_list);
-        LIST_HEAD(putback_list);
-        unsigned long collected = 0;
-
-        /* 1. scan + isolate */
-        for (zid = 0; zid < MAX_NR_ZONES; zid++) {
-            struct zone *zone = &pgdat->node_zones[zid];
-            struct lruvec *lruvec;
-
-            if (!managed_zone(zone))
-                continue;
-            
-            /* mem_cgroup_lruvec() 올바른 호출:
-             * 1) mem_cgroup_lruvec(NULL, pgdat) - 노드 전체
-             * 2) 또는 mem_cgroup_zone_lruvec(NULL, zone) - 존별
-             * 여기서는 DRAM 노드 전체를 보고 싶으므로 첫 번째 선택
-             */
-            lruvec = mem_cgroup_lruvec(NULL, pgdat);
-
-            /* zone_lr → lruvec 로 수정 */
-            collected += scan_active_lruvec(
-                lruvec,  /* zone_lr 제거 */
-                &isolated,
-                min_t(unsigned long, nr_pages - migrated - collected, 32768UL));
-        }
-
-        if (!collected)
-            break;
-
-        /* 2~4. 나머지는 그대로 */
-        while (!list_empty(&isolated)) {
-            struct folio *folio;
-
-            folio = list_first_entry(&isolated,
-                         struct folio, lru);
-            list_del(&folio->lru);
-
-            if (demote_folio_prepare(folio, dst_nid)) {
-                list_add(&folio->lru, &putback_list);
-                continue;
-            }
-
-            list_add(&folio->lru, &migrate_list);
-        }
-
-        /* 3. migrate */
-        migrated += migrate_demoted_folios(&migrate_list, dst_nid);
-
-        /* 4. putback */
-        if (!list_empty(&putback_list))
-            putback_movable_pages(&putback_list);
-
-        cond_resched();
-    }
-
-    return migrated;
-}
+ /* 전역 변수 선언 */
+atomic_long_t knice_migrated_count = ATOMIC_LONG_INIT(0);
+EXPORT_SYMBOL(knice_migrated_count);
 
 static int demote_worker_fn(void *arg)
 {
     int src_nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[src_nid];
-    int dst_nid = CXL_NODE_ID; // CXL Node
+    int dst_nid = CXL_NODE_ID;
 
-    /* 워커의 Nice 값을 높여 시스템 응답성 유지 */
+    /* 워커의 우선순위를 높여 정책 적용 지연 최소화 */
     set_user_nice(current, -1);
 
     while (!kthread_should_stop()) 
     {
         struct demote_request *req = NULL;
 
-        /* demote_worker_fn 내부 */
-		wait_event_interruptible(dn->wq, 
-    		!list_empty(&dn->request_queue) || 
-    		kthread_should_stop());
+        /* 1. 요청 대기 */
+        wait_event_interruptible(dn->wq, 
+            !list_empty(&dn->request_queue) || kthread_should_stop());
 
-        if (kthread_should_stop())
-            break;
-		
-        /* 2. 큐에서 요청 하나 인출 (FIFO) */
+        if (kthread_should_stop()) break;
+        
+        /* 2. 요청 인출 (FIFO) */
         spin_lock(&dn->lock);
         if (!list_empty(&dn->request_queue)) {
             req = list_first_entry(&dn->request_queue, struct demote_request, list);
@@ -7983,58 +7778,64 @@ static int demote_worker_fn(void *arg)
 
         if (!req) continue;
 
-		//printk(KERN_INFO "[KNICE] Worker 0: Processing PID %d, target pages: %lu\n", req->requester_pid, req->nr_pages);
-        /* 3. 해당 요청의 목표량(nr_pages)이 0이 될 때까지 마이그레이션 반복 */
+        /* 3. 정책 가속 및 공격성 강화 */
+        int old_period = sysctl_numa_balancing_scan_period_min;
+        int old_size = sysctl_numa_balancing_scan_size;
+
+        sysctl_numa_balancing_scan_period_min = 50;   /* 스캔 주기 가속 */
+        sysctl_numa_balancing_scan_size = 1024;       /* 스캔 범위 확대 */
+        knice_aggression_level = KNICE_LEVEL_BOOST;
+        knicedemoted_enabled = true;
+
         unsigned long remaining = req->nr_pages;
-        knicedemoted_enabled = true; // 마이그레이션 활성화 플래그
+        unsigned long timeout = jiffies + msecs_to_jiffies(5000); // 최대 5초 대기
 
-		int old_period = sysctl_numa_balancing_scan_period_min;
-		int old_size = sysctl_numa_balancing_scan_size;
+        /* 4. 관찰 루프: do_numa_page가 목표치를 채울 때까지 정책 유지 */
+        while (remaining > 0 && time_before(jiffies, timeout)) {
+            
+            /* do_numa_page가 성공시킨 CXL 마이그레이션 수 획득 및 초기화 */
+            unsigned long migrated = atomic_long_xchg(&knice_migrated_count, 0);
 
-		sysctl_numa_balancing_scan_period_min = 50;
-		sysctl_numa_balancing_scan_size = 1024;
-
-        while (remaining > 0) 
-        {
-            /* 한 번에 처리할 배치 크기 결정 */
-            unsigned long batch = min(remaining, 32768UL); // 최대 128MB 단위
-
-            /* 실제 마이그레이션 실행 (전 세대 훑기) */
-			
-            unsigned long migrated = try_to_demote_pages(batch, dst_nid);
-
-			printk(KERN_INFO "[KNICE] Worker 0: Batch attempt (%lu pages), Actually Migrated: %lu\n", batch, migrated);
-
-            if (migrated > 0) 
-            {
-                remaining -= migrated;
+            if (migrated > 0) {
+                if (migrated >= remaining) {
+                    remaining = 0;
+                } else {
+                    remaining -= migrated;
+                }
+                
+                /* 시스템 전역 통계 업데이트 */
                 atomic_long_sub(migrated, &dn->pending_pages);
                 atomic_long_add(migrated, &dn->demoted_pages);
+                
+                // 새로운 진행 상황이 있으면 타임아웃 갱신 (선택 사항)
+                timeout = jiffies + msecs_to_jiffies(2000);
             }
 
-            /* 더 이상 마이그레이션할 페이지가 없으면(DRAM 비워짐 등) 루프 탈출 */
-            if (migrated == 0) {
-                // 남은 양이 있더라도 현재 뺄 수 있는게 없으므로 강제 종료
-                atomic_long_sub(remaining, &dn->pending_pages);
-				//printk(KERN_INFO "[KNICE] Worker 0: Migration failed/stopped (remaining: %lu)\n", remaining);
-                break;
-            }
+            /* 2GB 이상 대량 요청 시 공격성 레벨 격상 */
+            if (remaining > 524288)
+                knice_aggression_level = KNICE_LEVEL_URGENT;
+            else
+                knice_aggression_level = KNICE_LEVEL_BOOST;
 
-            cond_resched(); // CPU 양보
+            msleep(100); 
+            cond_resched();
         }
 
-		sysctl_numa_balancing_scan_period_min = old_period;
-		sysctl_numa_balancing_scan_size = old_size;
+        /* 5. 정책 원복 및 정리 */
+        sysctl_numa_balancing_scan_period_min = old_period;
+        sysctl_numa_balancing_scan_size = old_size;
+        knice_aggression_level = KNICE_LEVEL_NORMAL;
+        knicedemoted_enabled = false;
 
-		knicedemoted_enabled = false;
+        /* 남은 pending_pages가 있다면(타임아웃 등) 보정 */
+        if (remaining > 0) {
+            atomic_long_sub(remaining, &dn->pending_pages);
+        }
 
-        /* 4. 하나의 요청 처리 완료 후 정리 */
         kfree(req);
-
-        /* 5. 큐가 완전히 비었는지 확인 후 플래그 해제 */
+        
         spin_lock(&dn->lock);
         if (list_empty(&dn->request_queue)) {
-            knicedemoted_enabled = false;
             atomic_set(&dn->in_progress, 0);
             dn->current_owner_pid = 0;
         }

@@ -1189,6 +1189,11 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	kmsan_task_create(tsk);
 	kmap_local_fork(tsk);
 
+#ifdef CONFIG_NUMA_BALANCING
+	tsk->last_knice_fault_time = 0;
+	tsk->knice_avg_interval = 0;
+#endif
+
 #ifdef CONFIG_FAULT_INJECTION
 	tsk->fail_nth = 0;
 #endif

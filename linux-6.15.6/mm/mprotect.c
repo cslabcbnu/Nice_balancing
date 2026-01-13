@@ -165,10 +165,8 @@ static long change_pte_range(struct mmu_gather *tlb,
 				 * a single-threaded process is running on.
 				 */
 				nid = folio_nid(folio);
-				if (target_node == nid){
-					folio_coldcount_reset(folio);
+				if (target_node == nid)
 					continue;
-				}
 					
 				toptier = node_is_toptier(nid);
 

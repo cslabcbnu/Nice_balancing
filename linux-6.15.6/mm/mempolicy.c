@@ -2819,6 +2819,8 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 	int polnid = NUMA_NO_NODE;
 	int ret = NUMA_NO_NODE;
 
+	int cxl_flag = 0;
+
 	/*
 	 * Make sure ptl is held so that we don't preempt and we
 	 * have a stable smp processor id
@@ -2886,17 +2888,36 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 		BUG();
 	}
 
+	if(knice_should_demote(current, folio))
+	{
+		cxl_flag = 1;
+	}
+	else
+	{
+		folio_coldcount_reset(folio);
+	}
+		
+	
+
 	/* Migrate the folio towards the node whose CPU is referencing it */
 	if (pol->flags & MPOL_F_MORON) {
 		polnid = thisnid;
 
 		if (!should_numa_migrate_memory(current, folio, curnid,
-						thiscpu))
+						thiscpu, cxl_flag))
 			goto out;
 	}
 
 	if (curnid != polnid)
 		ret = polnid;
+
+	if(cxl_flag)
+	{
+		polnid = CXL_NODE;
+		if (curnid != polnid)
+			ret = polnid;
+	}
+
 out:
 	mpol_cond_put(pol);
 

@@ -1407,8 +1407,6 @@ static inline struct folio *virt_to_folio(const void *x)
 
 /* folio coldcount */
 
-#define KDEMOTE_COLD_THRESHOLD 5
-
 static inline int folio_coldcount(const struct folio *folio)
 {
 	return atomic_read(&folio->_coldcount);
@@ -1429,15 +1427,11 @@ static inline int folio_coldcount_inc(struct folio *folio)
 	return atomic_inc_return(&folio->_coldcount);
 }
 
-static inline bool folio_test_cold(struct folio *folio)
+static inline bool folio_test_cold(struct folio *folio, int step)
 {
-    return atomic_read(&folio->_coldcount) >= KDEMOTE_COLD_THRESHOLD;
+    return atomic_read(&folio->_coldcount) >= step;
 }
 
-static inline bool folio_test_cold_step(struct folio *folio, int step)
-{
-	return atomic_read(&folio->_coldcount) >= step;
-}
 
 //hayong
 

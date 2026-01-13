@@ -1919,14 +1919,59 @@ static void numa_promotion_adjust_threshold(struct pglist_data *pgdat,
 	}
 }
 
+#define CXL_NODE	1  // hayong
+
+bool knice_should_demote(struct task_struct *p, struct folio *folio)
+{
+    // 0. 기본 전제: DRAM에 있을 때만 내보냄
+    if (!node_is_toptier(folio_nid(folio)))
+        return false;
+
+    /* [KNICE] 공격성 레벨에 따른 동적 임계값 설정 */
+    int req_coldcount = 5;      /* 기본: 5번 스캔될 동안 안 쓰임 */
+    unsigned long req_interval = 2 * HZ; /* 기본: 접근 간격 2초 이상 */
+    int req_latency = 1000;    /* 기본: Latency 1000ms 이상 */
+
+    if (knice_aggression_level == KNICE_LEVEL_BOOST) {
+        req_coldcount = 2;     /* 조금만 안 써도 내보냄 */
+        req_interval = 1 * HZ; /* 간격 기준 완화 */
+        req_latency = 500;     /* 반응이 조금 늦기만 해도 내보냄 */
+    } 
+    else if (knice_aggression_level == KNICE_LEVEL_URGENT) {
+        req_coldcount = 1;     /* 한 번만 스캔되어도 바로 타겟 */
+        req_interval = 0;      /* 간격 무시 */
+        req_latency = 0;       /* 즉각적인 접근 아니면 다 내보냄 */
+    }
+
+    // 1. 과거 이력(Coldness) 체크
+    if (!folio_test_cold(folio, req_coldcount))
+        return false;
+
+    // 2. 태스크 접근 주기 체크
+    if (p->knice_avg_interval <= req_interval)
+        return false;
+
+    // 3. 현재 접근의 긴급성(Latency) 체크
+    if (folio_use_access_time(folio)) {
+        int latency = numa_hint_fault_latency(folio);
+        if (latency < req_latency)
+            return false;
+    }
+
+    return true;
+}
+
 bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
-				int src_nid, int dst_cpu)
+				int src_nid, int dst_cpu, int cxl_flag)
 {
 	struct numa_group *ng = deref_curr_numa_group(p);
 	int dst_nid = cpu_to_node(dst_cpu);
 	int last_cpupid, this_cpupid;
 
-	// hayong 
+	
+	//hayong
+	if(cxl_flag == 1)
+		return true;
 
 	int niceval = task_nice(current);
 
@@ -3185,6 +3230,22 @@ void task_numa_fault(int last_cpupid, int mem_node, int pages, int flags)
 	/* for example, ksmd faulting in a user's mm */
 	if (!p->mm)
 		return;
+	
+
+	//hayong
+	unsigned long now = jiffies;
+	if(p->last_knice_fault_time) {
+		unsigned long diff = now - p->last_knice_fault_time;
+		if(p->knice_avg_interval == 0) {
+			p->knice_avg_interval = diff;
+		} else {
+			p->knice_avg_interval = (p->knice_avg_interval * 7 + diff) >> 3;
+		}
+	} else {
+		p->knice_avg_interval = HZ;
+	}
+	p->last_knice_fault_time = now;
+	//hayong end
 
 	/*
 	 * NUMA faults statistics are unnecessary for the slow memory
