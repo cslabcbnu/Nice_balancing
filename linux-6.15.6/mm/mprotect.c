@@ -135,7 +135,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 						// int after = folio_coldcount(folio);
 
 						// printk(KERN_INFO "[KNICE][PROTNONE HANDLED] addr=0x%lx nid=%d coldcount: %d -> %d\n", addr, folio_nid(folio), before, after);
-						// }
+						}
 						continue;
 					}
 				// hayong end
