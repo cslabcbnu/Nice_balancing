@@ -7790,7 +7790,7 @@ static int demote_worker_fn(void *arg)
          * 예: 2,400,000 pages (약 9.2GB) -> 약 120초(2분) 추가
          * 최소 10초는 보장하여 초기 예열 시간 확보
          */
-        unsigned long extra_time = (total_remaining / 20000) * msecs_to_jiffies(1000); 
+        unsigned long extra_time = (total_remaining / 40000) * msecs_to_jiffies(1000); 
         if (extra_time < msecs_to_jiffies(10000)) extra_time = msecs_to_jiffies(10000);
         
         unsigned long deadline = jiffies + extra_time;
@@ -7848,7 +7848,7 @@ static int demote_worker_fn(void *arg)
         sysctl_knice_cold_balancing = KNICE_LEVEL_NORMAL;
 
 		demote_enabled = false;
-		
+
         if (total_remaining == 0) {
             printk(KERN_INFO "[KNICE-WORKER] BATCH SUCCESS: Time: %u ms\n", 
                    jiffies_to_msecs(jiffies - start_time));
