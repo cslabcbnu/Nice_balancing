@@ -25,9 +25,9 @@ enum numa_vmaskip_reason {
 	NUMAB_SKIP_SEQ_COMPLETED,
 };
 
-#define KNICE_LEVEL_NORMAL   0  
-#define KNICE_LEVEL_BOOST    1  
-#define KNICE_LEVEL_URGENT   2  
+#define KNICE_LEVEL_NORMAL   1  
+#define KNICE_LEVEL_BOOST    2  
+#define KNICE_LEVEL_URGENT   3 
 
 #ifdef CONFIG_NUMA_BALANCING
 extern int knice_aggression_level;
