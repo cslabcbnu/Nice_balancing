@@ -7756,14 +7756,13 @@ static int demote_worker_fn(void *arg)
         struct demote_request *req, *tmp;
         unsigned long total_remaining = 0;
         unsigned long start_time;
+        unsigned long last_migrated;
 
-        /* 요청이 들어올 때까지 대기 */
         wait_event_interruptible(dn->wq, 
             !list_empty(&dn->request_queue) || kthread_should_stop());
 
         if (kthread_should_stop()) break;
 
-        /* 1. 큐에서 모든 요청 합산 */
         spin_lock(&dn->lock);
         list_for_each_entry_safe(req, tmp, &dn->request_queue, list) {
             total_remaining += req->nr_pages;
@@ -7777,17 +7776,27 @@ static int demote_worker_fn(void *arg)
             continue;
         }
 
+        /* [가속 설정] */
         sysctl_numa_balancing_scan_period_min = 500; 
         sysctl_numa_balancing_scan_size = 1024;
         sysctl_numa_balancing_scan_delay = 500;
         sysctl_knice_cold_balancing = KNICE_LEVEL_URGENT;
 
         start_time = jiffies;
-        unsigned long deadline = jiffies + msecs_to_jiffies(10000);
+        last_migrated = atomic_long_read(&knice_migrated_count);
+
+        /* * [시간 절반 단축 로직]
+         * 20,000 pages (약 80MB) 당 1초 추가
+         * 예: 2,400,000 pages (약 9.2GB) -> 약 120초(2분) 추가
+         * 최소 10초는 보장하여 초기 예열 시간 확보
+         */
+        unsigned long extra_time = (total_remaining / 20000) * msecs_to_jiffies(1000); 
+        if (extra_time < msecs_to_jiffies(10000)) extra_time = msecs_to_jiffies(10000);
         
-        unsigned long last_migrated = atomic_long_read(&knice_migrated_count);
-        
-        printk(KERN_INFO "[KNICE-WORKER] MISSION START: Total %lu pages until Done.\n", total_remaining);
+        unsigned long deadline = jiffies + extra_time;
+
+        printk(KERN_INFO "[KNICE-WORKER] MISSION START: Total %lu pages. Deadline: +%u sec\n", 
+               total_remaining, jiffies_to_msecs(extra_time)/1000);
 
         while (total_remaining > 0) {
             if (time_after(jiffies, deadline)) {
@@ -7800,25 +7809,30 @@ static int demote_worker_fn(void *arg)
 
             if (delta > 0) {
                 total_remaining = (delta >= total_remaining) ? 0 : total_remaining - delta;
-                
                 atomic_long_sub(delta, &dn->pending_pages);
                 atomic_long_add(delta, &dn->demoted_pages);
                 
                 printk(KERN_INFO "[KNICE-WORKER] Progress: -%lu | Left: %lu\n", delta, total_remaining);
-                
-                deadline = jiffies + msecs_to_jiffies(10000);
                 last_migrated = current_migrated;
             }
 
+            /* 중간에 새로운 요청이 들어오면 데드라인도 절반 기준(20,000당 1초)으로 연장 */
             if (!list_empty(&dn->request_queue)) {
+                unsigned long new_pages = 0;
                 spin_lock(&dn->lock);
                 list_for_each_entry_safe(req, tmp, &dn->request_queue, list) {
+                    new_pages += req->nr_pages;
                     total_remaining += req->nr_pages;
                     list_del(&req->list);
                     kfree(req);
                 }
                 spin_unlock(&dn->lock);
-                printk(KERN_INFO "[KNICE-WORKER] Mission Extended: New pages added.\n");
+
+                unsigned long added_time = (new_pages / 20000) * msecs_to_jiffies(1000);
+                deadline += added_time;
+                
+                printk(KERN_INFO "[KNICE-WORKER] Mission Extended: +%lu pages, +%u sec\n", 
+                       new_pages, jiffies_to_msecs(added_time)/1000);
             }
 
             if (total_remaining == 0) break;
@@ -7827,11 +7841,14 @@ static int demote_worker_fn(void *arg)
             cond_resched();
         }
 
+        /* [복구 설정] */
         sysctl_numa_balancing_scan_period_min = 1000; 
         sysctl_numa_balancing_scan_size = 256;
         sysctl_numa_balancing_scan_delay = 1000;
         sysctl_knice_cold_balancing = KNICE_LEVEL_NORMAL;
 
+		demote_enabled = false;
+		
         if (total_remaining == 0) {
             printk(KERN_INFO "[KNICE-WORKER] BATCH SUCCESS: Time: %u ms\n", 
                    jiffies_to_msecs(jiffies - start_time));
@@ -7840,11 +7857,11 @@ static int demote_worker_fn(void *arg)
             atomic_long_sub(total_remaining, &dn->pending_pages);
         }
 
-        /* [중요] 다음 요청을 받을 수 있도록 상태 해제 */
         spin_lock(&dn->lock);
         atomic_set(&dn->in_progress, 0);
         spin_unlock(&dn->lock);
     }
+	
     return 0;
 }
 
