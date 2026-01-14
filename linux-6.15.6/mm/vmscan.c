@@ -7772,8 +7772,8 @@ static int demote_worker_fn(void *arg)
             continue;
         }
 
-        sysctl_numa_balancing_scan_period_min = 500; 
-        sysctl_numa_balancing_scan_size = 1024;
+        sysctl_numa_balancing_scan_period_min = 50; 
+        sysctl_numa_balancing_scan_size = 2048;
         sysctl_knice_cold_balancing = KNICE_LEVEL_URGENT;
 
         start_time = jiffies;
