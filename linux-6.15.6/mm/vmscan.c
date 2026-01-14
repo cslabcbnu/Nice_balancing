@@ -7806,7 +7806,7 @@ static int demote_worker_fn(void *arg)
                 
                 printk(KERN_INFO "[KNICE-WORKER] Progress: -%lu | Left: %lu\n", delta, total_remaining);
                 
-                deadline = jiffies + msecs_to_jiffies(3000);
+                deadline = jiffies + msecs_to_jiffies(10000);
                 last_migrated = current_migrated;
             }
 
@@ -7823,7 +7823,7 @@ static int demote_worker_fn(void *arg)
 
             if (total_remaining == 0) break;
 
-            msleep(200); 
+            msleep(100); 
             cond_resched();
         }
 

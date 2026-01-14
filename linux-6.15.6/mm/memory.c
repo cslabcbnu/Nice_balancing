@@ -5808,8 +5808,7 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 		flags |= TNF_MIGRATED;
 		
 		//hayong
-		if (nid == CXL_NODE && sysctl_knice_cold_balancing == KNICE_LEVEL_URGENT)
-		{
+		if (target_nid == CXL_NODE){
 			atomic_long_add(nr_pages, &knice_migrated_count);
 		}
 		task_numa_fault(last_cpupid, nid, nr_pages, flags);
