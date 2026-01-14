@@ -289,10 +289,7 @@ static inline bool lru_gen_del_folio(struct lruvec *lruvec, struct folio *folio,
 	if (gen < 0)
 		return false;
 
-	if(!knicedemoted_enabled) {
-		VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);
-	}
-	
+	VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);
 	VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
 
 	/* for folio_migrate_flags() */
