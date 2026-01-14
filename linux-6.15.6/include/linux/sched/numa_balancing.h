@@ -25,10 +25,9 @@ enum numa_vmaskip_reason {
 	NUMAB_SKIP_SEQ_COMPLETED,
 };
 
-/* [KNICE] 마이그레이션 공격성 단계 정의 */
-#define KNICE_LEVEL_NORMAL   0  /* 기본 상태: 깐깐한 기준 */
-#define KNICE_LEVEL_BOOST    1  /* DRAM 부족: 기준 완화 시작 */
-#define KNICE_LEVEL_URGENT   2  /* 긴급: 매우 공격적인 밀어내기 */
+#define KNICE_LEVEL_NORMAL   0  
+#define KNICE_LEVEL_BOOST    1  
+#define KNICE_LEVEL_URGENT   2  
 
 #ifdef CONFIG_NUMA_BALANCING
 extern int knice_aggression_level;
