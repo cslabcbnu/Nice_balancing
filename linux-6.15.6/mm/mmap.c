@@ -282,7 +282,7 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 
 //hayong
 
-extern demote_enabled;
+extern bool demote_enabled;
 static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_pages, pid_t pid)
 {
     struct demote_request *new_req;
