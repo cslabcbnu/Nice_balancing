@@ -7779,7 +7779,7 @@ static int demote_worker_fn(void *arg)
         start_time = jiffies;
 
         /* 요청량 비례 Deadline 설정 (40,000 pages 당 1초, 최소 10초) */
-        unsigned long extra_time = (total_remaining / 40000) * msecs_to_jiffies(1000); 
+        unsigned long extra_time = (total_remaining / 20000) * msecs_to_jiffies(1000); 
         if (extra_time < msecs_to_jiffies(10000)) extra_time = msecs_to_jiffies(10000);
         
         unsigned long deadline = jiffies + extra_time;
@@ -7799,7 +7799,7 @@ static int demote_worker_fn(void *arg)
                 }
                 spin_unlock(&dn->lock);
 
-                unsigned long added_time = (new_pages / 20000) * msecs_to_jiffies(1000);
+                unsigned long added_time = (new_pages / 40000) * msecs_to_jiffies(1000);
                 deadline += added_time;
                 
                 printk(KERN_INFO "[KNICE-WORKER] New Request: +%lu pages. Deadline Extended: +%u sec\n", 
