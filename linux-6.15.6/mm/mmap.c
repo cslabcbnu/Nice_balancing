@@ -282,7 +282,7 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 
 //hayong
 
-/* VIP 프로세스의 마이그레이션 요청을 큐에 삽입하는 헬퍼 함수 */
+extern demote_enabled;
 static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_pages, pid_t pid)
 {
     struct demote_request *new_req;
@@ -616,9 +616,6 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	     (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE))
 		*populate = len;
 
-
-	if (demote_enabled)
-		demote_enabled = false;  // 페이지 할당 완료 후 demote 끔
 	return addr;
 }
 

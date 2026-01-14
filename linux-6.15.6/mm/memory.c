@@ -5744,6 +5744,7 @@ static void numa_rebuild_large_mapping(struct vm_fault *vmf, struct vm_area_stru
 		numa_rebuild_single_mapping(vmf, vma, addr, start_ptep, writable);
 	}
 }
+extern intsysctl_knice_cold_balancing;
 
 static vm_fault_t do_numa_page(struct vm_fault *vmf)
 {
@@ -5807,7 +5808,7 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 		flags |= TNF_MIGRATED;
 		
 		//hayong
-		if ( nid == CXL_NODE)
+		if (nid == CXL_NODE && sysctl_knice_cold_balancing == KNICE_LEVEL_URGENT)
 		{
 			atomic_long_add(nr_pages, &knice_migrated_count);
 		}

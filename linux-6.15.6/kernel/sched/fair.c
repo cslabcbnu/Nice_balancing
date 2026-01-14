@@ -1921,7 +1921,6 @@ static void numa_promotion_adjust_threshold(struct pglist_data *pgdat,
 
 #define CXL_NODE	1  // hayong
 
-extern int knice_aggression_level;
 extern bool knicedemoted_enabled;
 extern int sysctl_knice_cold_balancing;
 
@@ -1929,47 +1928,36 @@ extern int sysctl_knice_cold_balancing;
 bool knice_should_demote(struct task_struct *p, struct folio *folio)
 {
     int niceval = task_nice(p);
-    int cold_count = folio_coldcount(folio);
+    int mode = sysctl_knice_cold_balancing;
 
-    /* 0. 기능 활성화 체크 (사용자가 0으로 끄면 즉시 거부) */
-    if (sysctl_knice_cold_balancing == 0)
+    if (mode == 0)
         return false;
 
-    /* 1. 기본 전제: DRAM 노드에 있을 때만 내보냄 */
     if (!node_is_toptier(folio_nid(folio)))
         return false;
 
-    /* [A] Urgent 모드 (워커가 깨어난 긴급 상황)
-     * - nice >= 0 인 일반 프로세스는 즉시 강등 타겟이 됨.
-     * - nice < 0 인 중요한 프로세스는 보호를 위해 아래의 깐깐한 필터로 보냄.
-     */
-    if (knice_aggression_level == KNICE_LEVEL_URGENT) {
+    if (mode == KNICE_LEVEL_URGENT) {
         if (niceval >= 0)
             return true;
     }
 
-    /* [B] 사용자 설정 기반 필터링 (Normal / Boost) */
     int req_coldcount;
     unsigned long req_interval = 0;
     int req_latency = 0;
 
-    if (sysctl_knice_cold_balancing == 2) { 
-        /* Boost 모드: 선제적 확보를 위해 기준 완화 */
+    if (mode == KNICE_LEVEL_BOOST) { 
         req_coldcount = 3;
     } else { 
-        /* Normal 모드: 성능 유지를 위해 보수적 기준 (Default) */
         req_coldcount = 5;
         req_interval = 2 * HZ;
         req_latency = 1000;
     }
 
-    /* [C] 중요 프로세스 최종 보호막 */
-    /* URGENT 상황이 아닐 때 nice < 0 인 태스크는 절대로 강등시키지 않음 */
-    if (niceval < 0)
+    if (mode != KNICE_LEVEL_URGENT && niceval < 0)
         return false;
 
-    /* [D] 하드웨어/이력 기반 필터링 */
-    if (cold_count < req_coldcount)
+    
+    if (!folio_test_cold(folio, req_coldcount))
         return false;
 
     if (p->knice_avg_interval <= req_interval)
@@ -1984,16 +1972,11 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
 }
 
 bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
-				int src_nid, int dst_cpu, int cxl_flag)
+				int src_nid, int dst_cpu)
 {
 	struct numa_group *ng = deref_curr_numa_group(p);
 	int dst_nid = cpu_to_node(dst_cpu);
 	int last_cpupid, this_cpupid;
-
-	
-	//hayong
-	if(cxl_flag == 1)
-		return true;
 
 	int niceval = task_nice(current);
 

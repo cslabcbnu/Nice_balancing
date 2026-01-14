@@ -2807,7 +2807,7 @@ static void sp_free(struct sp_node *n)
  * policy, or a suitable node ID to allocate a replacement folio from.
  */
 
- #define CXL_NODE  1  // Define CXL_NODE as -1 for demonstration purposes
+#define CXL_NODE  1  // Define CXL_NODE as -1 for demonstration purposes
 int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 		   unsigned long addr)
 {
@@ -2898,9 +2898,14 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 	{
 		folio_coldcount_reset(folio);
 	}
-		
-	
 
+	if(cxl_flag)
+	{
+		if (curnid != CXL_NODE)
+			ret = CXL_NODE;
+		goto out;
+	}
+		
 	/* Migrate the folio towards the node whose CPU is referencing it */
 	if (pol->flags & MPOL_F_MORON) {
 		polnid = thisnid;
@@ -2912,13 +2917,6 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 
 	if (curnid != polnid)
 		ret = polnid;
-
-	if(cxl_flag)
-	{
-		polnid = CXL_NODE;
-		if (curnid != polnid)
-			ret = polnid;
-	}
 
 out:
 	mpol_cond_put(pol);

@@ -75,7 +75,6 @@
 
 //hayong
 struct demote_node demote_nodes[2];
-bool knicedemoted_enabled = false;
 bool demote_enabled = false;
 EXPORT_SYMBOL(demote_enabled);
 #include <linux/sched.h>
@@ -83,6 +82,7 @@ EXPORT_SYMBOL(demote_enabled);
 #include <linux/sched/numa_balancing.h>
 extern int sysctl_numa_balancing_scan_period_min;
 extern int sysctl_numa_balancing_scan_size;
+extern int sysctl_numa_balancing_scan_delay;
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
@@ -4512,13 +4512,10 @@ static bool isolate_folio(struct lruvec *lruvec, struct folio *folio, struct sca
 	bool success;
 
 	/* swap constrained */
-	if (!knicedemoted_enabled)
-	{
 		if (!(sc->gfp_mask & __GFP_IO) &&
 	    (folio_test_dirty(folio) ||
 	     (folio_test_anon(folio) && !folio_test_swapcache(folio))))
 		return false;
-	}
 	
 	/* raced with release_pages() */
 	if (!folio_try_get(folio))
@@ -6297,7 +6294,7 @@ static void shrink_zones(struct zonelist *zonelist, struct scan_control *sc)
 		shrink_node(zone->zone_pgdat, sc);
 	}
 
-	if (first_pgdat && !knicedemoted_enabled)
+	if (first_pgdat)
 		consider_reclaim_throttle(first_pgdat, sc);
 
 	/*
@@ -7747,10 +7744,7 @@ EXPORT_SYMBOL_GPL(check_move_unevictable_folios);
  /* 전역 변수 선언 */
 atomic_long_t knice_migrated_count = ATOMIC_LONG_INIT(0);
 EXPORT_SYMBOL(knice_migrated_count);
-int knice_aggression_level = 0;
-EXPORT_SYMBOL(knice_aggression_level);
 extern int sysctl_knice_cold_balancing;
-
 
 static int demote_worker_fn(void *arg)
 {
@@ -7763,13 +7757,13 @@ static int demote_worker_fn(void *arg)
         unsigned long total_remaining = 0;
         unsigned long start_time;
 
-
+        /* 요청이 들어올 때까지 대기 */
         wait_event_interruptible(dn->wq, 
             !list_empty(&dn->request_queue) || kthread_should_stop());
 
         if (kthread_should_stop()) break;
 
-        /* 1. 큐 합산 */
+        /* 1. 큐에서 모든 요청 합산 */
         spin_lock(&dn->lock);
         list_for_each_entry_safe(req, tmp, &dn->request_queue, list) {
             total_remaining += req->nr_pages;
@@ -7778,41 +7772,44 @@ static int demote_worker_fn(void *arg)
         }
         spin_unlock(&dn->lock);
 
-        if (total_remaining == 0) continue;
+        if (total_remaining == 0) {
+            atomic_set(&dn->in_progress, 0);
+            continue;
+        }
 
-        /* 2. 환경 설정 가속 (URGENT 모드) */
-        int old_period = sysctl_numa_balancing_scan_period_min;
-        int old_size = sysctl_numa_balancing_scan_size;
-
-        sysctl_numa_balancing_scan_period_min = 50; 
+        sysctl_numa_balancing_scan_period_min = 500; 
         sysctl_numa_balancing_scan_size = 1024;
-        knice_aggression_level = KNICE_LEVEL_URGENT;
-        knicedemoted_enabled = true;
+        sysctl_numa_balancing_scan_delay = 500;
+        sysctl_knice_cold_balancing = KNICE_LEVEL_URGENT;
 
         start_time = jiffies;
-		unsigned long deadline = jiffies + msecs_to_jiffies(10000);
+        unsigned long deadline = jiffies + msecs_to_jiffies(10000);
+        
+        unsigned long last_migrated = atomic_long_read(&knice_migrated_count);
+        
         printk(KERN_INFO "[KNICE-WORKER] MISSION START: Total %lu pages until Done.\n", total_remaining);
 
-        while (total_remaining > 0 && !time_before(jiffies, deadline)) {
-
-			if (time_after(jiffies, deadline)) {
-                printk(KERN_WARNING "[KNICE-WORKER] MISSION YIELD: Timeout reached to protect workload.\n");
+        while (total_remaining > 0) {
+            if (time_after(jiffies, deadline)) {
+                printk(KERN_WARNING "[KNICE-WORKER] MISSION YIELD: Timeout reached.\n");
                 break;
             }
             
-            unsigned long migrated = atomic_long_xchg(&knice_migrated_count, 0);
+            unsigned long current_migrated = atomic_long_read(&knice_migrated_count);
+            unsigned long delta = current_migrated - last_migrated;
 
-            if (migrated > 0) {
-                total_remaining = (migrated >= total_remaining) ? 0 : total_remaining - migrated;
+            if (delta > 0) {
+                total_remaining = (delta >= total_remaining) ? 0 : total_remaining - delta;
                 
-                atomic_long_sub(migrated, &dn->pending_pages);
-                atomic_long_add(migrated, &dn->demoted_pages);
+                atomic_long_sub(delta, &dn->pending_pages);
+                atomic_long_add(delta, &dn->demoted_pages);
                 
-                printk(KERN_INFO "[KNICE-WORKER] Progress: -%lu | Left: %lu\n", migrated, total_remaining);
-				deadline = jiffies + msecs_to_jiffies(3000);
+                printk(KERN_INFO "[KNICE-WORKER] Progress: -%lu | Left: %lu\n", delta, total_remaining);
+                
+                deadline = jiffies + msecs_to_jiffies(3000);
+                last_migrated = current_migrated;
+            }
 
-			}
-            /* 중간에 새로운 요청이 들어오면 계속 추가 */
             if (!list_empty(&dn->request_queue)) {
                 spin_lock(&dn->lock);
                 list_for_each_entry_safe(req, tmp, &dn->request_queue, list) {
@@ -7824,31 +7821,28 @@ static int demote_worker_fn(void *arg)
                 printk(KERN_INFO "[KNICE-WORKER] Mission Extended: New pages added.\n");
             }
 
+            if (total_remaining == 0) break;
+
             msleep(200); 
             cond_resched();
         }
 
-		if (total_remaining == 0) {
-            printk(KERN_INFO "[KNICE-WORKER] BATCH SUCCESS: All requests fulfilled. Time: %u ms\n", 
+        sysctl_numa_balancing_scan_period_min = 1000; 
+        sysctl_numa_balancing_scan_size = 256;
+        sysctl_numa_balancing_scan_delay = 1000;
+        sysctl_knice_cold_balancing = KNICE_LEVEL_NORMAL;
+
+        if (total_remaining == 0) {
+            printk(KERN_INFO "[KNICE-WORKER] BATCH SUCCESS: Time: %u ms\n", 
                    jiffies_to_msecs(jiffies - start_time));
         } else {
-            printk(KERN_WARNING "[KNICE-WORKER] BATCH TIMEOUT: %lu pages left in DRAM\n", total_remaining);
+            printk(KERN_WARNING "[KNICE-WORKER] BATCH FAILED: %lu pages left\n", total_remaining);
             atomic_long_sub(total_remaining, &dn->pending_pages);
         }
 
-        /* 4. 복구 */
-        sysctl_numa_balancing_scan_period_min = old_period;
-        sysctl_numa_balancing_scan_size = old_size;
-        knice_aggression_level = KNICE_LEVEL_NORMAL;
-        knicedemoted_enabled = false;
-
-        printk(KERN_INFO "[KNICE-WORKER] MISSION FINISHED: All tasks done. Time: %u ms\n", 
-               jiffies_to_msecs(jiffies - start_time));
-
+        /* [중요] 다음 요청을 받을 수 있도록 상태 해제 */
         spin_lock(&dn->lock);
-        if (list_empty(&dn->request_queue)) {
-            atomic_set(&dn->in_progress, 0);
-        }
+        atomic_set(&dn->in_progress, 0);
         spin_unlock(&dn->lock);
     }
     return 0;

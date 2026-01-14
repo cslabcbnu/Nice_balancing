@@ -991,7 +991,7 @@ static struct kobj_attribute numa_demotion_enabled_attr =
 
 static struct attribute *numa_attrs[] = {
     &numa_demotion_enabled_attr.attr,
-    &cold_balancing_attr.attr,    /* ← 이 한 줄만 추가 */
+    &cold_balancing_attr.attr,
     NULL,
 };
 
