@@ -5806,11 +5806,6 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 	if (!migrate_misplaced_folio(folio, target_nid)) {
 		nid = target_nid;
 		flags |= TNF_MIGRATED;
-		
-		//hayong
-		if (target_nid == CXL_NODE){
-			atomic_long_add(nr_pages, &knice_migrated_count);
-		}
 		task_numa_fault(last_cpupid, nid, nr_pages, flags);
 		return 0;
 	}
