@@ -7812,7 +7812,7 @@ static int demote_worker_fn(void *arg)
         /* [복구 및 종료] */
         sysctl_numa_balancing_scan_period_min = 1000; 
         sysctl_numa_balancing_scan_size = 256;
-        sysctl_knice_cold_balancing = KNICE_LEVEL_BOOST;
+        sysctl_knice_cold_balancing = KNICE_LEVEL_NORMAL;
 
         demote_enabled = false;
 

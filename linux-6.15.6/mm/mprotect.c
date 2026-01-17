@@ -127,14 +127,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 					folio = vm_normal_folio(vma, addr, oldpte);
 
 					if (folio && !folio_test_ksm(folio)) {
-
-						// int before = folio_coldcount(folio);
-
 						folio_coldcount_inc(folio);
-
-						// int after = folio_coldcount(folio);
-
-						// printk(KERN_INFO "[KNICE][PROTNONE HANDLED] addr=0x%lx nid=%d coldcount: %d -> %d\n", addr, folio_nid(folio), before, after);
 						}
 						continue;
 					}
