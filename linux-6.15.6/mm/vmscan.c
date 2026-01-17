@@ -7798,7 +7798,7 @@ static int demote_worker_fn(void *arg)
                 }
                 spin_unlock(&dn->lock);
 
-                unsigned long added_time = (new_pages / 60000) * msecs_to_jiffies(1000);
+                unsigned long added_time = (new_pages / 10000) * msecs_to_jiffies(1000);
                 deadline += added_time;
                 
                 printk(KERN_INFO "[KNICE-WORKER] New Request: +%lu pages. Deadline Extended: +%u sec\n", 
@@ -7812,7 +7812,7 @@ static int demote_worker_fn(void *arg)
         /* [복구 및 종료] */
         sysctl_numa_balancing_scan_period_min = 1000; 
         sysctl_numa_balancing_scan_size = 256;
-        sysctl_knice_cold_balancing = KNICE_LEVEL_BOOST;
+        sysctl_knice_cold_balancing = KNICE_LEVEL_NORMAL;
 
         demote_enabled = false;
 
