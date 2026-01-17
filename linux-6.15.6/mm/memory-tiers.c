@@ -938,7 +938,7 @@ bool numa_demotion_enabled = false;
 
 #ifdef CONFIG_MIGRATION
 #ifdef CONFIG_SYSFS
-int sysctl_knice_cold_balancing = 1;  /* 0:Off, 1:Normal, 2:Boost */
+int sysctl_knice_cold_balancing = 2;
 
 static ssize_t cold_balancing_show(struct kobject *kobj,
                                    struct kobj_attribute *attr, char *buf)
