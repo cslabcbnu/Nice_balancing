@@ -295,7 +295,6 @@ static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_page
 
     spin_lock(&dn->lock);
     list_add_tail(&new_req->list, &dn->request_queue);
-    atomic_long_add(nr_pages, &dn->pending_pages);
 
     if (!atomic_read(&dn->in_progress)) {
         atomic_set(&dn->in_progress, 1);
