@@ -7807,7 +7807,7 @@ static int demote_worker_fn(void *arg)
                 unsigned long added_time = msecs_to_jiffies(added_msecs);
                 deadline += added_time;
                 
-                printk(KERN_INFO "[KNICE-WORKER] New Request: +%lu pages. Deadline Extended: +%u ms\n", 
+                printk(KERN_INFO "[KNICE-WORKER] New Request: +%lu pages. Deadline Extended: +%lu ms\n", 
                        new_pages, added_msecs);
             }
 
