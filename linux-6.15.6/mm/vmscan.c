@@ -7772,8 +7772,8 @@ static int demote_worker_fn(void *arg)
             continue;
         }
 
-        sysctl_numa_balancing_scan_period_min = 50; 
-        sysctl_numa_balancing_scan_size = 2048;
+        // sysctl_numa_balancing_scan_period_min = 50; 
+        // sysctl_numa_balancing_scan_size = 2048;
         sysctl_knice_cold_balancing = KNICE_LEVEL_URGENT;
 		demote_enabled = true;
 
@@ -7813,8 +7813,8 @@ static int demote_worker_fn(void *arg)
         }
 
         /* [복구 및 종료] */
-        sysctl_numa_balancing_scan_period_min = 1000; 
-        sysctl_numa_balancing_scan_size = 256;
+        // sysctl_numa_balancing_scan_period_min = 1000; 
+        // sysctl_numa_balancing_scan_size = 256;
         sysctl_knice_cold_balancing = KNICE_LEVEL_BOOST;
 
         demote_enabled = false;
