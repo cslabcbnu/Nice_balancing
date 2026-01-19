@@ -7818,11 +7818,11 @@ static int demote_worker_fn(void *arg)
         /* [복구 및 종료] */
         sysctl_numa_balancing_scan_period_min = 1000; 
         sysctl_numa_balancing_scan_size = 256;
-        sysctl_knice_cold_balancing = KNICE_LEVEL_NORMAL;
+        sysctl_knice_cold_balancing = KNICE_LEVEL_BOOST;
 
         demote_enabled = false;
 
-        printk(KERN_INFO "[KNICE-WORKER] MISSION DONE: Burst Mode Finished. Time: %u ms\n", 
+        printk(KERN_INFO "[KNICE-WORKER] MISSION DONE: urgent Mode Finished. Time: %u ms\n", 
                jiffies_to_msecs(jiffies - start_time));
 
         atomic_long_set(&dn->pending_pages, 0); 
