@@ -7798,11 +7798,17 @@ static int demote_worker_fn(void *arg)
                 }
                 spin_unlock(&dn->lock);
 
-                unsigned long added_time = (new_pages / 10000) * msecs_to_jiffies(1000);
+                unsigned long added_msecs = new_pages / 75;
+
+				if (new_pages > 0 && added_msecs == 0) {
+                    added_msecs = 1;
+                }
+
+                unsigned long added_time = msecs_to_jiffies(added_msecs);
                 deadline += added_time;
                 
-                printk(KERN_INFO "[KNICE-WORKER] New Request: +%lu pages. Deadline Extended: +%u sec\n", 
-                       new_pages, jiffies_to_msecs(added_time)/1000);
+                printk(KERN_INFO "[KNICE-WORKER] New Request: +%lu pages. Deadline Extended: +%u ms\n", 
+                       new_pages, added_msecs);
             }
 
             msleep(200);
