@@ -1955,7 +1955,7 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
         req_latency = 1000;
     }
 
-    if (niceval < 0).
+    if (niceval < 0)
         return false;
 
     if (!folio_test_cold(folio, req_coldcount))
