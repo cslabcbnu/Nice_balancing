@@ -78,7 +78,6 @@ struct demote_node {
     spinlock_t lock;                /* 큐 조작 및 구조체 보호용 락 */
     
     atomic_t in_progress;           /* 현재 워커가 작업 중인지 여부 (0 또는 1) */
-    atomic_long_t pending_pages;    /* 큐에 쌓인 모든 요청의 총 페이지 합계 */
     
     wait_queue_head_t wq;           /* 워커를 깨우기 위한 대기열 */
     

@@ -957,7 +957,7 @@ static ssize_t cold_balancing_store(struct kobject *kobj,
     if (ret)
         return ret;
 
-    if (val < 0 || val > 2)
+    if (val < 0 || val > 3)
         return -EINVAL;
 
     sysctl_knice_cold_balancing = val;

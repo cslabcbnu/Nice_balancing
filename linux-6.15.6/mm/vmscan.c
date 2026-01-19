@@ -7739,6 +7739,11 @@ static int demote_worker_fn(void *arg)
 {
     int src_nid = (int)(unsigned long)arg;
     struct demote_node *dn = &demote_nodes[src_nid];
+	int old_scan_period;
+	int old_scan_size;
+
+	old_scan_period = sysctl_numa_balancing_scan_period_min;
+	old_scan_size = sysctl_numa_balancing_scan_size;
     set_user_nice(current, -1);
 
     while (!kthread_should_stop()) {
@@ -7764,10 +7769,12 @@ static int demote_worker_fn(void *arg)
             continue;
         }
 
-        sysctl_numa_balancing_scan_period_min = 50; 
-        sysctl_numa_balancing_scan_size = 2048;
-        sysctl_knice_cold_balancing = KNICE_LEVEL_URGENT;
-		demote_enabled = true;
+		
+
+        WRITE_ONCE(sysctl_numa_balancing_scan_period_min, 50); 
+        WRITE_ONCE(sysctl_numa_balancing_scan_size, 2048);
+        WRITE_ONCE(sysctl_knice_cold_balancing, KNICE_LEVEL_URGENT);
+		WRITE_ONCE(demote_enabled, true);
 
         start_time = jiffies;
 
@@ -7801,19 +7808,16 @@ static int demote_worker_fn(void *arg)
             }
 
             msleep(200);
-            cond_resched();
         }
 
-        sysctl_numa_balancing_scan_period_min = 1000; 
-        sysctl_numa_balancing_scan_size = 256;
-        sysctl_knice_cold_balancing = KNICE_LEVEL_BOOST;
+        WRITE_ONCE(sysctl_numa_balancing_scan_period_min, old_scan_period); 
+        WRITE_ONCE(sysctl_numa_balancing_scan_size, old_scan_size);
+        WRITE_ONCE(sysctl_knice_cold_balancing, KNICE_LEVEL_BOOST);
 
-        demote_enabled = false;
-
+        WRITE_ONCE(demote_enabled, false);
         printk(KERN_INFO "[KNICE-WORKER] MISSION DONE: urgent Mode Finished. Time: %u ms\n", 
                jiffies_to_msecs(jiffies - start_time));
 
-        atomic_long_set(&dn->pending_pages, 0); 
         spin_lock(&dn->lock);
         atomic_set(&dn->in_progress, 0);
         spin_unlock(&dn->lock);
@@ -7831,7 +7835,6 @@ static int __init knicedemoted_init(void)
     spin_lock_init(&demote_nodes[src_node].lock);
 
     atomic_set(&demote_nodes[src_node].in_progress, 0);
-    atomic_long_set(&demote_nodes[src_node].pending_pages, 0);
     atomic_long_set(&demote_nodes[src_node].demoted_pages, 0);
 
     init_waitqueue_head(&demote_nodes[src_node].wq);

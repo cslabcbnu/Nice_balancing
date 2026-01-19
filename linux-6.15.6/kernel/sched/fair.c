@@ -1927,7 +1927,7 @@ extern int sysctl_knice_cold_balancing;
 bool knice_should_demote(struct task_struct *p, struct folio *folio)
 {
     int niceval = task_nice(p);
-    int mode = sysctl_knice_cold_balancing;
+    int mode = READ_ONCE(sysctl_knice_cold_balancing);
 
     if (mode == KNICE_LEVEL_OFF)
         return false;

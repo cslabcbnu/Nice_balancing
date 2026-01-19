@@ -288,10 +288,6 @@ static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_page
     struct demote_request *new_req;
 
     new_req = kmalloc(sizeof(*new_req), GFP_KERNEL);
-    if (!new_req) {
-        //printk(KERN_ERR "[KNICE] FAILED to kmalloc request for PID %d\n", pid);
-        return;
-    }
 
     new_req->nr_pages = nr_pages;
     new_req->requester_pid = pid;
@@ -314,7 +310,7 @@ static void handle_nice_balancing(unsigned long len)
 {
     int nice_val = task_nice(current);
     unsigned long nr_pages = len >> PAGE_SHIFT;
-    struct demote_node *dn = &demote_nodes[DRAM_NODE_ID];
+    struct demote_node *dn = &demote_nodes[0];
 
     if (nice_val < 0) {
         enqueue_demote_request(dn, nr_pages, current->pid);
