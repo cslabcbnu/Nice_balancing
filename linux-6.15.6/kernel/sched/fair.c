@@ -1937,8 +1937,11 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
         return false;
 
     if (mode == KNICE_LEVEL_URGENT) {
-        if (niceval >= 0)
+        if (niceval >= 0) {
             return true;
+        } else {
+            return false;
+        }
     }
 
     int req_coldcount;
@@ -1953,10 +1956,9 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
         req_latency = 1000;
     }
 
-    if (mode != KNICE_LEVEL_URGENT && niceval < 0)
+    if (niceval < 0)
         return false;
 
-    
     if (!folio_test_cold(folio, req_coldcount))
         return false;
 

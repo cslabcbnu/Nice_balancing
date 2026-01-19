@@ -7798,7 +7798,7 @@ static int demote_worker_fn(void *arg)
                 }
                 spin_unlock(&dn->lock);
 
-                unsigned long added_msecs = new_pages / 75;
+                unsigned long added_msecs = new_pages / 60;
 
 				if (new_pages > 0 && added_msecs == 0) {
                     added_msecs = 1;
