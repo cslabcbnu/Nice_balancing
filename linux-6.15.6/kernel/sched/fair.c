@@ -1924,7 +1924,6 @@ static void numa_promotion_adjust_threshold(struct pglist_data *pgdat,
 extern bool demote_enabled;
 extern int sysctl_knice_cold_balancing;
 
-
 bool knice_should_demote(struct task_struct *p, struct folio *folio)
 {
     int niceval = task_nice(p);
@@ -1982,7 +1981,7 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
 
 	int niceval = task_nice(current);
 
-	if(demote_enabled && niceval >= 0 && dst_nid == 0 && src_nid == 1)
+	if(demote_enabled && niceval >= 0 && src_nid == 1)
 		return false;
 
 	/*

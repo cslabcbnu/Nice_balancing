@@ -7775,6 +7775,7 @@ static int demote_worker_fn(void *arg)
         sysctl_numa_balancing_scan_period_min = 50; 
         sysctl_numa_balancing_scan_size = 2048;
         sysctl_knice_cold_balancing = KNICE_LEVEL_URGENT;
+		demote_enabled = true;
 
         start_time = jiffies;
 
@@ -7798,11 +7799,7 @@ static int demote_worker_fn(void *arg)
                 }
                 spin_unlock(&dn->lock);
 
-                unsigned long added_msecs = new_pages / 600;
-
-				if (new_pages > 0 && added_msecs == 0) {
-                    added_msecs = 1;
-                }
+                unsigned long added_msecs = (new_pages / 50000) * 1000;
 
                 unsigned long added_time = msecs_to_jiffies(added_msecs);
                 deadline += added_time;
