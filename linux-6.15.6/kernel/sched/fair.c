@@ -1928,11 +1928,14 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
     int niceval = task_nice(p);
     int mode = READ_ONCE(sysctl_knice_cold_balancing);
 
-    if (mode == KNICE_LEVEL_OFF)
-        return false;
-
-	if (folio_nid(folio) == CXL_NODE)
+    if (mode == KNICE_LEVEL_OFF) {
 		return false;
+	}
+
+	if (folio_nid(folio) == CXL_NODE) {
+		return false;
+	}
+
 
     if (mode == KNICE_LEVEL_URGENT) {
         if (niceval >= 0) {
