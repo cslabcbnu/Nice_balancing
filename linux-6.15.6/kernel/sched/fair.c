@@ -1919,7 +1919,7 @@ static void numa_promotion_adjust_threshold(struct pglist_data *pgdat,
 	}
 }
 
-#define CXL_NODE	1  // hayong
+#define CXL_NODE	1
 
 extern int sysctl_knice_cold_balancing;
 

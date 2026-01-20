@@ -935,10 +935,11 @@ static int __init memory_tier_init(void)
 subsys_initcall(memory_tier_init);
 
 bool numa_demotion_enabled = false;
+int sysctl_knice_cold_balancing = 0;
 
 #ifdef CONFIG_MIGRATION
 #ifdef CONFIG_SYSFS
-int sysctl_knice_cold_balancing = 2;
+
 
 static ssize_t cold_balancing_show(struct kobject *kobj,
                                    struct kobj_attribute *attr, char *buf)
