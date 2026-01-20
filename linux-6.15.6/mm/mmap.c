@@ -280,42 +280,6 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 	return true;
 }
 
-//hayong
-
-extern bool demote_enabled;
-static void enqueue_demote_request(struct demote_node *dn, unsigned long nr_pages, pid_t pid)
-{
-    struct demote_request *new_req;
-
-    new_req = kmalloc(sizeof(*new_req), GFP_KERNEL);
-
-    new_req->nr_pages = nr_pages;
-    new_req->requester_pid = pid;
-    INIT_LIST_HEAD(&new_req->list);
-
-    spin_lock(&dn->lock);
-    list_add_tail(&new_req->list, &dn->request_queue);
-
-    if (!atomic_read(&dn->in_progress)) {
-        atomic_set(&dn->in_progress, 1);
-        dn->current_owner_pid = pid;
-    }
-    
-    wake_up_interruptible(&dn->wq);
-    spin_unlock(&dn->lock);
-}
-/* do_mmap 내에서 호출될 메인 로직 분리 */
-static void handle_nice_balancing(unsigned long len)
-{
-    int nice_val = task_nice(current);
-    unsigned long nr_pages = len >> PAGE_SHIFT;
-    struct demote_node *dn = &demote_nodes[0];
-
-    if (nice_val < 0) {
-        enqueue_demote_request(dn, nr_pages, current->pid);
-    }
-}
-
 /**
  * do_mmap() - Perform a userland memory mapping into the current process
  * address space of length @len with protection bits @prot, mmap flags @flags
@@ -390,7 +354,6 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	if (!len)
 		return -EINVAL;
 
-	/* 가독성을 위해 별도 함수로 호출 */
     if (demote_enabled) {
 		handle_nice_balancing(len);
 	}

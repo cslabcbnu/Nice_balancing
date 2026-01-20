@@ -65,34 +65,7 @@ trigger in mmap.c */
 #define DRAM_NODE_ID 0
 #define CXL_NODE_ID  1
 
-/* 1. 개별 요청 단위 (작업 지시서) */
-struct demote_request {
-    struct list_head list;       /* 큐 연결용 헤드 */
-    unsigned long nr_pages;      /* 이 요청이 처리해야 할 페이지 수 */
-    pid_t requester_pid;         /* 요청한 VIP의 PID */
-};
-
-/* 2. 노드별 워커 관리자 (워크스테이션) */
-struct demote_node {
-    struct list_head request_queue; /* 요청(demote_request)들이 쌓이는 곳 */
-    spinlock_t lock;                /* 큐 조작 및 구조체 보호용 락 */
-    
-    atomic_t in_progress;           /* 현재 워커가 작업 중인지 여부 (0 또는 1) */
-    
-    wait_queue_head_t wq;           /* 워커를 깨우기 위한 대기열 */
-    
-    /* 통계 및 추적용 (선택 사항) */
-    pid_t current_owner_pid;        /* 현재 처리 중인 요청의 PID */
-    atomic_long_t demoted_pages;    /* 실제로 마이그레이션에 성공한 총 페이지 수 */
-};
-
-extern struct demote_node demote_nodes[2];
-extern bool knicedemoted_enabled;
-extern bool demote_enabled;
-
 long kernel_set_task_preferred_node(struct task_struct *task, int nid); // implement in mm/mempolicy.c
-
-// hayong knicedemoted 
 
 #else
 static inline int next_demotion_node(int node)
