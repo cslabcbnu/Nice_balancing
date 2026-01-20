@@ -1931,6 +1931,9 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
     if (mode == KNICE_LEVEL_OFF)
         return false;
 
+	if (folio_nid(folio) == CXL_NODE)
+		return false;
+
     if (mode == KNICE_LEVEL_URGENT) {
         if (niceval >= 0) {
 			printk_ratelimited(KERN_INFO "[KNICE_DEBUG] URGENT Demote: PID %d, Nice %d, FolioNid %d -> CXL\n", 

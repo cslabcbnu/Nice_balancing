@@ -2893,7 +2893,7 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 
 		extern int sysctl_knice_cold_balancing;
 
-		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT)
+		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0)
              printk_ratelimited(KERN_ERR "[KNICE_MPOL] Reached MORON check for PID %d\n", current->pid);
 
 		if(knice_should_demote(current, folio))

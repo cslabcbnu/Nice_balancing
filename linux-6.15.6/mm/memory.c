@@ -5758,11 +5758,6 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 	pte_t pte, old_pte;
 	int flags = 0, nr_pages;
 
-	if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT) {
-        printk_ratelimited(KERN_ERR "[KNICE_ENTRY] PID:%d, Nice:%d\n", 
-                           current->pid, task_nice(current));
-    }
-
 	/*
 	 * The pte cannot be used safely until we verify, while holding the page
 	 * table lock, that its contents have not changed during fault handling.
@@ -5791,9 +5786,9 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 	if (!folio || folio_is_zone_device(folio))
 		goto out_map;
 
-	if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT) {
-        printk_ratelimited(KERN_ERR "[KNICE_FOLIO] PID:%d, FolioNid:%d\n", 
-                           current->pid, folio_nid(folio));
+	if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
+        printk_ratelimited(KERN_ERR "[KNICE_FOLIO] PID:%d\n", 
+                           current->pid);
 		}
 
 	nid = folio_nid(folio);
