@@ -2887,14 +2887,11 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 	default:
 		BUG();
 	}
-		
-	/* Migrate the folio towards the node whose CPU is referencing it */
-	if (pol->flags & MPOL_F_MORON) {
 
-		extern int sysctl_knice_cold_balancing;
+	extern int sysctl_knice_cold_balancing;
 
 		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0)
-             printk_ratelimited(KERN_ERR "[KNICE_MPOL] Reached MORON check for PID %d\n", current->pid);
+             printk(KERN_ERR "[KNICE_MPOL] Reached MORON check for PID %d\n", current->pid);
 
 		if(knice_should_demote(current, folio) && curnid == 0)
 		{
@@ -2905,6 +2902,9 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 		{
 			folio_coldcount_reset(folio);
 		}
+		
+	/* Migrate the folio towards the node whose CPU is referencing it */
+	if (pol->flags & MPOL_F_MORON) {
 
 		polnid = thisnid;
 

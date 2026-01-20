@@ -5787,10 +5787,6 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 		goto out_map;
 
 	int niceval = task_nice(current);
-	if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && niceval >= 0 && folio_nid(folio) == 0) {
-        printk_ratelimited(KERN_ERR "[KNICE_FOLIO] PID:%d\n", 
-                           current->pid);
-		}
 
 	nid = folio_nid(folio);
 	nr_pages = folio_nr_pages(folio);
