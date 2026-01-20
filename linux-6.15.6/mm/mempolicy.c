@@ -2807,7 +2807,7 @@ static void sp_free(struct sp_node *n)
  * policy, or a suitable node ID to allocate a replacement folio from.
  */
 
-#define CXL_NODE  1  // Define CXL_NODE as -1 for demonstration purposes
+#define CXL_NODE  1
 int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 		   unsigned long addr)
 {

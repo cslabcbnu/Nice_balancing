@@ -1936,6 +1936,8 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
 
     if (mode == KNICE_LEVEL_URGENT) {
         if (niceval >= 0) {
+			printk_ratelimited(KERN_INFO "[KNICE_DEBUG] URGENT Demote: PID %d, Nice %d, FolioNid %d -> CXL\n", 
+                               p->pid, niceval, folio_nid(folio));
             return true;
         } else {
             return false;
