@@ -2896,13 +2896,13 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0)
              printk_ratelimited(KERN_ERR "[KNICE_MPOL] Reached MORON check for PID %d\n", current->pid);
 
-		if(knice_should_demote(current, folio))
+		if(knice_should_demote(current, folio) && curnid == 0)
 		{
-			if (curnid != CXL_NODE)
-				ret = CXL_NODE;
-
+			ret = CXL_NODE;
 			goto out;
-		} else {
+		}
+		else 
+		{
 			folio_coldcount_reset(folio);
 		}
 
