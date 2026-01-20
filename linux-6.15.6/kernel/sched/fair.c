@@ -1928,13 +1928,6 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
     int niceval = task_nice(p);
     int mode = READ_ONCE(sysctl_knice_cold_balancing);
 
-    if (node_is_toptier(folio_nid(folio)) && niceval >= 0) {
-        printk(KERN_ERR "[KNICE_TARGET] Found Nice 0 in DRAM! PID: %d\n", p->pid);
-    }
-
-    if (!node_is_toptier(folio_nid(folio)))
-        return false;
-
     if (mode == KNICE_LEVEL_OFF)
         return false;
 
@@ -1986,7 +1979,7 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
 
 	int niceval = task_nice(current);
 
-	if (sysctl_knice_cold_balancing && niceval >= 0 && src_nid == 1)
+	if (sysctl_knice_cold_balancing == KNICE_LEVEL_URGENT && niceval >= 0 && src_nid == 1)
 		return false;
 
 	/*
