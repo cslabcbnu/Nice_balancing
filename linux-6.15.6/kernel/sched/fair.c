@@ -1928,6 +1928,9 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
     int niceval = task_nice(p);
     int mode = READ_ONCE(sysctl_knice_cold_balancing);
 
+	printk_ratelimited(KERN_INFO "[KNICE_ENTRY] PID: %d, Mode: %d, Nice: %d, FolioNid: %d\n", 
+                       p->pid, mode, niceval, folio_nid(folio));
+
     if (mode == KNICE_LEVEL_OFF)
         return false;
 
