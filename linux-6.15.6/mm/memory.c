@@ -5786,8 +5786,6 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 	if (!folio || folio_is_zone_device(folio))
 		goto out_map;
 
-	int niceval = task_nice(current);
-
 	nid = folio_nid(folio);
 	nr_pages = folio_nr_pages(folio);
 
