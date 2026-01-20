@@ -356,7 +356,6 @@ static bool can_demote(int nid, struct scan_control *sc)
 	if (next_demotion_node(nid) == NUMA_NO_NODE)
 		return false;
 
-	demote_enabled = true;
 	return true;
 }
 
