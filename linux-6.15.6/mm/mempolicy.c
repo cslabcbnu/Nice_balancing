@@ -2822,39 +2822,52 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
     int polnid = NUMA_NO_NODE;
     int ret = NUMA_NO_NODE;
 
-    printk_ratelimited(KERN_ERR "[DEBUG] enter mpol_misplaced: pid=%d curnid=%d thisnid=%d\n",
-           current->pid, curnid, thisnid);
+	if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
+		printk_ratelimited(KERN_ERR "[DEBUG] Enter mpol_misplaced curnid=%d thisnid=%d\n", curnid, thisnid);
+	}
 
     lockdep_assert_held(vmf->ptl);
     pol = get_vma_policy(vma, addr, folio_order(folio), &ilx);
     if (!(pol->flags & MPOL_F_MOF)) {
-        printk_ratelimited(KERN_ERR "[DEBUG] exit: policy has no MOF flag\n");
+        if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
+			printk_ratelimited(KERN_ERR "[DEBUG] no MOF flag, keep curnid=%d\n", curnid);
+		}
         goto out;
     }
 
     switch (pol->mode) {
     case MPOL_INTERLEAVE:
         polnid = interleave_nid(pol, ilx);
-        printk_ratelimited(KERN_ERR "[DEBUG] mode=INTERLEAVE polnid=%d\n", polnid);
+        if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
+			printk_ratelimited(KERN_ERR "[DEBUG] mode=INTERLEAVE polnid=%d\n", polnid);
+		}
         break;
 
     case MPOL_WEIGHTED_INTERLEAVE:
         polnid = weighted_interleave_nid(pol, ilx);
-        printk_ratelimited(KERN_ERR "[DEBUG] mode=WEIGHTED polnid=%d\n", polnid);
+        if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
+			printk_ratelimited(KERN_ERR "[DEBUG] mode=WEIGHTED_INTERLEAVE polnid=%d\n", polnid);
+		}
         break;
 
     case MPOL_PREFERRED:
         if (node_isset(curnid, pol->nodes)) {
-            printk_ratelimited(KERN_ERR "[DEBUG] mode=PREFERRED current node in mask, skip\n");
+            if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
+			printk_ratelimited(KERN_ERR "[DEBUG] mode=PREFERRED polnid=%d\n", polnid);
+			}
             goto out;
         }
         polnid = first_node(pol->nodes);
-        printk_ratelimited(KERN_ERR "[DEBUG] mode=PREFERRED polnid=%d\n", polnid);
+		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
+			printk_ratelimited(KERN_ERR "[DEBUG] mode=PREFERRED polnid=%d\n", polnid);
+		}
         break;
 
     case MPOL_LOCAL:
         polnid = numa_node_id();
-        printk_ratelimited(KERN_ERR "[DEBUG] mode=LOCAL polnid=%d\n", polnid);
+		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
+			printk_ratelimited(KERN_ERR "[DEBUG] mode=LOCAL polnid=%d\n", polnid);
+		}
         break;
 
     case MPOL_BIND:
@@ -2864,11 +2877,15 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
                 printk(KERN_ERR "[DEBUG] MORON flag, thisnid in mask\n");
                 break;
             }
-            printk_ratelimited(KERN_ERR "[DEBUG] MORON flag, thisnid not in mask, skip\n");
+			if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
+			printk_ratelimited(KERN_ERR "[DEBUG] BIND/PREF_MANY polnid=%d\n", polnid);
+			}
             goto out;
         }
         if (node_isset(curnid, pol->nodes)) {
-            printk_ratelimited(KERN_ERR "[DEBUG] BIND/PREF_MANY current node in mask, skip\n");
+			if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
+			printk_ratelimited(KERN_ERR "[DEBUG] BIND/PREF_MANY polnid=%d\n", polnid);
+			}
             goto out;
         }
         z = first_zones_zonelist(
@@ -2876,7 +2893,10 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
                 gfp_zone(GFP_HIGHUSER),
                 &pol->nodes);
         polnid = zonelist_node_idx(z);
-        printk_ratelimited(KERN_ERR "[DEBUG] BIND/PREF_MANY polnid=%d\n", polnid);
+		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT &&
+        folio_nid(folio) == 0) {
+			printk_ratelimited(KERN_ERR "[DEBUG] BIND/PREF_MANY polnid=%d\n", polnid);
+		}
         break;
 
     default:
@@ -2900,20 +2920,16 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 
     if (pol->flags & MPOL_F_MORON) {
         polnid = thisnid;
-        printk_ratelimited(KERN_ERR "[DEBUG] MORON migrate to thisnid=%d\n", polnid);
         if (!should_numa_migrate_memory(current, folio, curnid, thiscpu)) {
-            printk_ratelimited(KERN_ERR "[DEBUG] should_numa_migrate_memory returned false, skip\n");
             goto out;
         }
     }
 
     if (curnid != polnid) {
-        printk_ratelimited(KERN_ERR "[DEBUG] curnid=%d != polnid=%d, set ret\n", curnid, polnid);
         ret = polnid;
     }
 
 out:
-    printk_ratelimited(KERN_ERR "[DEBUG] exit mpol_misplaced: ret=%d\n", ret);
     mpol_cond_put(pol);
     return ret;
 }
