@@ -2823,6 +2823,7 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
     int ret = NUMA_NO_NODE;
 
 	extern int sysctl_knice_cold_balancing;
+	int niceval = task_nice(current);
 
 
     lockdep_assert_held(vmf->ptl);
@@ -2842,7 +2843,12 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 
     case MPOL_PREFERRED:
         if (node_isset(curnid, pol->nodes)) {
-            break;
+			if(sysctl_knice_cold_balancing && niceval >= 0 && curnid == 0) {
+				break;
+			}
+			else {
+				goto out;
+			}
         }
         polnid = first_node(pol->nodes);
         break;
