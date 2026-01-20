@@ -2822,6 +2822,8 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
     int polnid = NUMA_NO_NODE;
     int ret = NUMA_NO_NODE;
 
+	extern int sysctl_knice_cold_balancing;
+
 	if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
 		printk_ratelimited(KERN_ERR "[DEBUG] Enter mpol_misplaced curnid=%d thisnid=%d\n", curnid, thisnid);
 	}
@@ -2893,8 +2895,7 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
                 gfp_zone(GFP_HIGHUSER),
                 &pol->nodes);
         polnid = zonelist_node_idx(z);
-		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT &&
-        folio_nid(folio) == 0) {
+		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0) {
 			printk_ratelimited(KERN_ERR "[DEBUG] BIND/PREF_MANY polnid=%d\n", polnid);
 		}
         break;
@@ -2903,7 +2904,6 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
         BUG();
     }
 
-    extern int sysctl_knice_cold_balancing;
     if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT &&
         folio_nid(folio) == 0) {
         printk_ratelimited(KERN_ERR "[KNICE_MPOL] URGENT path pid=%d\n", current->pid);
