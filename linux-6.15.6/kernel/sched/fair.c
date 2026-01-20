@@ -1921,7 +1921,6 @@ static void numa_promotion_adjust_threshold(struct pglist_data *pgdat,
 
 #define CXL_NODE	1  // hayong
 
-extern bool demote_enabled;
 extern int sysctl_knice_cold_balancing;
 
 bool knice_should_demote(struct task_struct *p, struct folio *folio)
@@ -1981,7 +1980,7 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
 
 	int niceval = task_nice(current);
 
-	if(demote_enabled && niceval >= 0 && src_nid == 1)
+	if (sysctl_knice_cold_balancing && niceval >= 0 && src_nid == 1)
 		return false;
 
 	/*
