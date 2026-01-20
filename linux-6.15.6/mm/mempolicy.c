@@ -2890,7 +2890,9 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 		
 	/* Migrate the folio towards the node whose CPU is referencing it */
 	if (pol->flags & MPOL_F_MORON) {
-		
+
+		extern int sysctl_knice_cold_balancing;
+
 		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT)
              printk_ratelimited(KERN_ERR "[KNICE_MPOL] Reached MORON check for PID %d\n", current->pid);
 
