@@ -73,16 +73,6 @@
 #include "internal.h"
 #include "swap.h"
 
-//hayong
-struct demote_node demote_nodes[2];
-bool demote_enabled = false;
-EXPORT_SYMBOL(demote_enabled);
-#include <linux/sched.h>
-#include <linux/sched/sysctl.h>
-#include <linux/sched/numa_balancing.h>
-extern int sysctl_numa_balancing_scan_period_min;
-extern int sysctl_numa_balancing_scan_size;
-
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
 

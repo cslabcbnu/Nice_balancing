@@ -353,10 +353,6 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 
 	if (!len)
 		return -EINVAL;
-
-    if (demote_enabled) {
-		handle_nice_balancing(len);
-	}
         
 	/*
 	 * Does the application expect PROT_READ to imply PROT_EXEC?
