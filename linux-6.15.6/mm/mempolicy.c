@@ -2808,118 +2808,114 @@ static void sp_free(struct sp_node *n)
  */
 
 #define CXL_NODE  1
+#define CXL_NODE  1
 int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
-		   unsigned long addr)
+                   unsigned long addr)
 {
-	struct mempolicy *pol;
-	pgoff_t ilx;
-	struct zoneref *z;
-	int curnid = folio_nid(folio);
-	struct vm_area_struct *vma = vmf->vma;
-	int thiscpu = raw_smp_processor_id();
-	int thisnid = numa_node_id();
-	int polnid = NUMA_NO_NODE;
-	int ret = NUMA_NO_NODE;
+    struct mempolicy *pol;
+    pgoff_t ilx;
+    struct zoneref *z;
+    int curnid = folio_nid(folio);
+    struct vm_area_struct *vma = vmf->vma;
+    int thiscpu = raw_smp_processor_id();
+    int thisnid = numa_node_id();
+    int polnid = NUMA_NO_NODE;
+    int ret = NUMA_NO_NODE;
 
-	/*
-	 * Make sure ptl is held so that we don't preempt and we
-	 * have a stable smp processor id
-	 */
-	lockdep_assert_held(vmf->ptl);
-	pol = get_vma_policy(vma, addr, folio_order(folio), &ilx);
-	if (!(pol->flags & MPOL_F_MOF))
-		goto out;
+    printk_ratelimit_state(KERN_ERR "[DEBUG] enter mpol_misplaced: pid=%d curnid=%d thisnid=%d\n",
+           current->pid, curnid, thisnid);
 
-	switch (pol->mode) {
-	case MPOL_INTERLEAVE:
-		polnid = interleave_nid(pol, ilx);
-		break;
+    lockdep_assert_held(vmf->ptl);
+    pol = get_vma_policy(vma, addr, folio_order(folio), &ilx);
+    if (!(pol->flags & MPOL_F_MOF)) {
+        printk_ratelimit_state(KERN_ERR "[DEBUG] exit: policy has no MOF flag\n");
+        goto out;
+    }
 
-	case MPOL_WEIGHTED_INTERLEAVE:
-		polnid = weighted_interleave_nid(pol, ilx);
-		break;
+    switch (pol->mode) {
+    case MPOL_INTERLEAVE:
+        polnid = interleave_nid(pol, ilx);
+        printk_ratelimit_state(KERN_ERR "[DEBUG] mode=INTERLEAVE polnid=%d\n", polnid);
+        break;
 
-	case MPOL_PREFERRED:
-		if (node_isset(curnid, pol->nodes))
-			goto out;
-		polnid = first_node(pol->nodes);
-		break;
+    case MPOL_WEIGHTED_INTERLEAVE:
+        polnid = weighted_interleave_nid(pol, ilx);
+        printk_ratelimit_state(KERN_ERR "[DEBUG] mode=WEIGHTED polnid=%d\n", polnid);
+        break;
 
-	case MPOL_LOCAL:
-		polnid = numa_node_id();
-		break;
+    case MPOL_PREFERRED:
+        if (node_isset(curnid, pol->nodes)) {
+            printk_ratelimit_state(KERN_ERR "[DEBUG] mode=PREFERRED current node in mask, skip\n");
+            goto out;
+        }
+        polnid = first_node(pol->nodes);
+        printk_ratelimit_state(KERN_ERR "[DEBUG] mode=PREFERRED polnid=%d\n", polnid);
+        break;
 
-	case MPOL_BIND:
-	case MPOL_PREFERRED_MANY:
-		/*
-		 * Even though MPOL_PREFERRED_MANY can allocate pages outside
-		 * policy nodemask we don't allow numa migration to nodes
-		 * outside policy nodemask for now. This is done so that if we
-		 * want demotion to slow memory to happen, before allocating
-		 * from some DRAM node say 'x', we will end up using a
-		 * MPOL_PREFERRED_MANY mask excluding node 'x'. In such scenario
-		 * we should not promote to node 'x' from slow memory node.
-		 */
-		if (pol->flags & MPOL_F_MORON) {
-			/*
-			 * Optimize placement among multiple nodes
-			 * via NUMA balancing
-			 */
-			if (node_isset(thisnid, pol->nodes))
-				break;
-			goto out;
-		}
+    case MPOL_LOCAL:
+        polnid = numa_node_id();
+        printk_ratelimit_state(KERN_ERR "[DEBUG] mode=LOCAL polnid=%d\n", polnid);
+        break;
 
-		/*
-		 * use current page if in policy nodemask,
-		 * else select nearest allowed node, if any.
-		 * If no allowed nodes, use current [!misplaced].
-		 */
-		if (node_isset(curnid, pol->nodes))
-			goto out;
-		z = first_zones_zonelist(
-				node_zonelist(thisnid, GFP_HIGHUSER),
-				gfp_zone(GFP_HIGHUSER),
-				&pol->nodes);
-		polnid = zonelist_node_idx(z);
-		break;
+    case MPOL_BIND:
+    case MPOL_PREFERRED_MANY:
+        if (pol->flags & MPOL_F_MORON) {
+            if (node_isset(thisnid, pol->nodes)) {
+                printk(KERN_ERR "[DEBUG] MORON flag, thisnid in mask\n");
+                break;
+            }
+            printk_ratelimit_state(KERN_ERR "[DEBUG] MORON flag, thisnid not in mask, skip\n");
+            goto out;
+        }
+        if (node_isset(curnid, pol->nodes)) {
+            printk_ratelimit_state(KERN_ERR "[DEBUG] BIND/PREF_MANY current node in mask, skip\n");
+            goto out;
+        }
+        z = first_zones_zonelist(
+                node_zonelist(thisnid, GFP_HIGHUSER),
+                gfp_zone(GFP_HIGHUSER),
+                &pol->nodes);
+        polnid = zonelist_node_idx(z);
+        printk_ratelimit_state(KERN_ERR "[DEBUG] BIND/PREF_MANY polnid=%d\n", polnid);
+        break;
 
-	default:
-		BUG();
-	}
+    default:
+        BUG();
+    }
 
-	extern int sysctl_knice_cold_balancing;
+    extern int sysctl_knice_cold_balancing;
+    if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT &&
+        folio_nid(folio) == 0) {
+        printk_ratelimit_state(KERN_ERR "[KNICE_MPOL] URGENT path pid=%d\n", current->pid);
+    }
 
-		if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT && folio_nid(folio) == 0)
-             printk(KERN_ERR "[KNICE_MPOL] Reached MORON check for PID %d\n", current->pid);
+    if (knice_should_demote(current, folio) && curnid == 0) {
+        printk_ratelimit_state(KERN_ERR "[DEBUG] knice_should_demote returned true, demote to CXL\n");
+        ret = CXL_NODE;
+        goto out;
+    } else {
+        printk_ratelimit_state(KERN_ERR "[DEBUG] knice_should_demote returned false, reset coldcount\n");
+        folio_coldcount_reset(folio);
+    }
 
-		if(knice_should_demote(current, folio) && curnid == 0)
-		{
-			ret = CXL_NODE;
-			goto out;
-		}
-		else 
-		{
-			folio_coldcount_reset(folio);
-		}
-		
-	/* Migrate the folio towards the node whose CPU is referencing it */
-	if (pol->flags & MPOL_F_MORON) {
+    if (pol->flags & MPOL_F_MORON) {
+        polnid = thisnid;
+        printk_ratelimit_state(KERN_ERR "[DEBUG] MORON migrate to thisnid=%d\n", polnid);
+        if (!should_numa_migrate_memory(current, folio, curnid, thiscpu)) {
+            printk_ratelimit_state(KERN_ERR "[DEBUG] should_numa_migrate_memory returned false, skip\n");
+            goto out;
+        }
+    }
 
-		polnid = thisnid;
-
-		if (!should_numa_migrate_memory(current, folio, curnid,
-						thiscpu))
-			goto out;
-	}
-
-	if (curnid != polnid)
-		ret = polnid;
+    if (curnid != polnid) {
+        printk_ratelimit_state(KERN_ERR "[DEBUG] curnid=%d != polnid=%d, set ret\n", curnid, polnid);
+        ret = polnid;
+    }
 
 out:
-	mpol_cond_put(pol);
-
-	return ret;
+    printk_ratelimit_state(KERN_ERR "[DEBUG] exit mpol_misplaced: ret=%d\n", ret);
+    mpol_cond_put(pol);
+    return ret;
 }
 
 /*
