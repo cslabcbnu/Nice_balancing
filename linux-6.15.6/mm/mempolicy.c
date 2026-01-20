@@ -2887,17 +2887,18 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
 	default:
 		BUG();
 	}
-
-	if(knice_should_demote(current, folio)){
-		if (curnid != CXL_NODE)
-			ret = CXL_NODE;
-		goto out;
-	} else {
-		folio_coldcount_reset(folio);
-	}
 		
 	/* Migrate the folio towards the node whose CPU is referencing it */
 	if (pol->flags & MPOL_F_MORON) {
+
+		if(knice_should_demote(current, folio)){
+			if (curnid != CXL_NODE)
+				ret = CXL_NODE;
+			goto out;
+		} else {
+			folio_coldcount_reset(folio);
+		}
+		
 		polnid = thisnid;
 
 		if (!should_numa_migrate_memory(current, folio, curnid,
