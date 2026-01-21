@@ -706,6 +706,7 @@ void folio_migrate_flags(struct folio *newfolio, struct folio *folio)
 	folio_xchg_last_cpupid(newfolio, cpupid);
 
 	//hayong
+	folio_coldcount_dec(folio);
 	folio_coldcount_copy(newfolio, folio);
 	folio_coldcount_set(folio, 0);
 	//hayong end
