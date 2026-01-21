@@ -167,7 +167,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 					int score = 1;
 
 					if (!folio_test_referenced(folio)) score++;
-					if (!folio_test_active(folio)) score++;
+					if (!folio_test_active(folio)) score +=2;
 
 					folio_coldcount_add(folio, score);
 

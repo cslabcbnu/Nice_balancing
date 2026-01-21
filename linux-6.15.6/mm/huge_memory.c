@@ -2453,7 +2453,7 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 			int score = 1;
 
 			if (!folio_test_referenced(folio)) score++;
-			if (!folio_test_active(folio)) score++;
+			if (!folio_test_active(folio)) score += 4;
 
 			folio_coldcount_add(folio, score);
 

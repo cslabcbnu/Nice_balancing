@@ -1946,7 +1946,7 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
 
     if (mode == KNICE_LEVEL_BOOST) 
 	{ 
-        req_coldcount = 3;
+        req_coldcount = 2;
     } 
 	else 
 	{ 
@@ -1972,80 +1972,57 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
     int last_cpupid, this_cpupid;
     int niceval = task_nice(current);
 
-    /* URGENT 모드에서 CXL 노드(src_nid==1) → migration 막기 */
     if (sysctl_knice_cold_balancing == KNICE_LEVEL_URGENT &&
         niceval >= 0 && src_nid == 1)
         return false;
 
-    /* memoryless node로는 migration 불가 */
     if (!node_state(dst_nid, N_MEMORY))
         return false;
 
-    /* folio가 access time 기반 hot/cold 판정 대상일 때 */
-    if (folio_use_access_time(folio)) {
-        struct pglist_data *pgdat;
-        unsigned long rate_limit;
-        unsigned int latency, th, def_th;
+	if (folio_use_access_time(folio)) {
+		struct pglist_data *pgdat;
+		unsigned long rate_limit;
+		unsigned int latency, th, def_th;
 
-        pgdat = NODE_DATA(dst_nid);
-        if (pgdat_free_space_enough(pgdat)) {
-            pgdat->nbp_threshold = 0;
-            return true;
-        }
+		pgdat = NODE_DATA(dst_nid);
+		if (pgdat_free_space_enough(pgdat)) {
+			/* workload changed, reset hot threshold */
+			pgdat->nbp_threshold = 0;
+			return true;
+		}
 
-        def_th = sysctl_numa_balancing_hot_threshold;
-        rate_limit = sysctl_numa_balancing_promote_rate_limit << (20 - PAGE_SHIFT);
-        numa_promotion_adjust_threshold(pgdat, rate_limit, def_th);
+		def_th = sysctl_numa_balancing_hot_threshold;
+		rate_limit = sysctl_numa_balancing_promote_rate_limit << \
+			(20 - PAGE_SHIFT);
+		numa_promotion_adjust_threshold(pgdat, rate_limit, def_th);
 
-        th = pgdat->nbp_threshold ? : def_th;
-        latency = numa_hint_fault_latency(folio);
-
-        /* latency가 threshold 이상 → DRAM folio라면 coldcount 증가 */
-        if (latency >= th) {
-            if (!folio_is_zone_device(folio) &&
+		th = pgdat->nbp_threshold ? : def_th;
+		latency = numa_hint_fault_latency(folio);
+		if (latency >= th) {
+			if (!folio_is_zone_device(folio) &&
                 node_is_toptier(folio_nid(folio))) {
                 folio_coldcount_inc(folio);
             }
-            return false;
-        }
+		}
+			return false;
 
-        /* promote rate limit에 걸려서 migration 불가 → DRAM folio라면 coldcount 증가 */
-        if (!numa_promotion_rate_limit(pgdat, rate_limit, folio_nr_pages(folio))) {
-            return true;
-        } else {
-            if (!folio_is_zone_device(folio) &&
-                node_is_toptier(folio_nid(folio))) {
-                folio_coldcount_inc(folio);
-            }
-            return false;
-        }
-    }
+		return !numa_promotion_rate_limit(pgdat, rate_limit,
+						  folio_nr_pages(folio));
+	}
+
 
     this_cpupid = cpu_pid_to_cpupid(dst_cpu, current->pid);
     last_cpupid = folio_xchg_last_cpupid(folio, this_cpupid);
 
-    /* tiering 비활성화 + toptier mismatch → DRAM folio라면 coldcount 증가 */
     if (!(sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) &&
         !node_is_toptier(src_nid) && !cpupid_valid(last_cpupid) &&
         !sysctl_knice_cold_balancing) {
-        if (!folio_is_zone_device(folio) &&
-            node_is_toptier(folio_nid(folio))) {
-            folio_coldcount_inc(folio);
-        }
         return false;
     }
 
-    /* cpupid mismatch → DRAM folio라면 coldcount 증가 */
-    if (!cpupid_pid_unset(last_cpupid) &&
-        cpupid_to_nid(last_cpupid) != dst_nid) {
-        if (!folio_is_zone_device(folio) &&
-            node_is_toptier(folio_nid(folio))) {
-            folio_coldcount_inc(folio);
-        }
+    if (!cpupid_pid_unset(last_cpupid) && cpupid_to_nid(last_cpupid) != dst_nid)
         return false;
-    }
 
-    /* 이후 로직은 기존과 동일 */
     if ((p->numa_preferred_nid == NUMA_NO_NODE || p->numa_scan_seq <= 4) &&
         (cpupid_pid_unset(last_cpupid) || cpupid_match_pid(p, last_cpupid)))
         return true;
