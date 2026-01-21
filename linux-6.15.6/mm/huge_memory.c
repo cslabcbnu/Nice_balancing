@@ -2375,6 +2375,9 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	bool uffd_wp_resolve = cp_flags & MM_CP_UFFD_WP_RESOLVE;
 	int ret = 1;
 
+	extern int sysctl_knice_cold_balancing;
+	READ_ONCE(sysctl_knice_cold_balancing);
+
 	tlb_change_page_size(tlb, HPAGE_PMD_SIZE);
 
 	if (prot_numa && !thp_migration_supported())
@@ -2444,7 +2447,7 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		 * balancing is disabled
 		 */
 		if (!(sysctl_numa_balancing_mode & NUMA_BALANCING_NORMAL) &&
-		    toptier)
+		    toptier && !sysctl_knice_cold_balancing)
 			goto unlock;
 
 		if (folio_use_access_time(folio))

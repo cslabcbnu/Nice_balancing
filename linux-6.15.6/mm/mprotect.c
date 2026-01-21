@@ -96,6 +96,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 	bool uffd_wp_resolve = cp_flags & MM_CP_UFFD_WP_RESOLVE;
 
 	extern int sysctl_knice_cold_balancing;
+	READ_ONCE(sysctl_knice_cold_balancing);
 
 	tlb_change_page_size(tlb, PAGE_SIZE);
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
@@ -128,7 +129,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 				if (pte_protnone(oldpte)) {
 					folio = vm_normal_folio(vma, addr, oldpte);
 
-					if (folio && !folio_test_ksm(folio)) {
+					if (folio) {
 						folio_coldcount_inc(folio);
 						}
 						continue;
