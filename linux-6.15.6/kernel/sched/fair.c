@@ -1953,8 +1953,11 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
         req_coldcount = 5;
     }
 
-	printk_ratelimited(KERN_INFO "[FOLIO DEMOTE] pid=%d mode = %d coldcount=%d\n", current->pid, mode, folio_coldcount(folio));
-	
+	if(folio_test_cold(folio, req_coldcount))
+	{
+		printk_ratelimited(KERN_INFO "[FOLIO DEMOTE] pid=%d mode = %d coldcount=%d\n", current->pid, mode, folio_coldcount(folio));
+	}
+
     if (!folio_test_cold(folio, req_coldcount))
         return false;
 
@@ -2002,8 +2005,11 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
 
 		th = pgdat->nbp_threshold ? : def_th;
 		latency = numa_hint_fault_latency(folio);
-		if (latency >= th)
+		if (latency >= th){
+			folio_coldcount_inc(folio);
 			return false;
+		}
+			
 
 		return !numa_promotion_rate_limit(pgdat, rate_limit,
 						  folio_nr_pages(folio));

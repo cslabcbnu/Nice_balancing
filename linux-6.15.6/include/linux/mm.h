@@ -1427,6 +1427,16 @@ static inline int folio_coldcount_inc(struct folio *folio)
 	return atomic_inc_return(&folio->_coldcount);
 }
 
+static inline int folio_coldcount_dec(struct folio *folio)
+{
+	return atomic_dec_return(&folio->_coldcount);
+}
+
+static inline void folio_coldcount_copy(struct folio *dst, struct folio *src)
+{
+	atomic_set(&dst->_coldcount, atomic_read(&src->_coldcount));
+}
+
 static inline bool folio_test_cold(struct folio *folio, int step)
 {
     return atomic_read(&folio->_coldcount) >= step;

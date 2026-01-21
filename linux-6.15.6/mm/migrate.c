@@ -704,6 +704,12 @@ void folio_migrate_flags(struct folio *newfolio, struct folio *folio)
 			cpupid = -1;
 	}
 	folio_xchg_last_cpupid(newfolio, cpupid);
+
+	//hayong
+	folio_coldcount_copy(newfolio, folio);
+	folio_coldcount_set(folio, 0);
+	//hayong end
+
 	folio_migrate_ksm(newfolio, folio);
 	/*
 	 * Please do not reorder this without considering how mm/ksm.c's
@@ -732,6 +738,8 @@ void folio_migrate_flags(struct folio *newfolio, struct folio *folio)
 	 */
 	if (folio_test_readahead(folio))
 		folio_set_readahead(newfolio);
+
+	
 
 	folio_copy_owner(newfolio, folio);
 	pgalloc_tag_swap(newfolio, folio);

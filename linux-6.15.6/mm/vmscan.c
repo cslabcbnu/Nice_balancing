@@ -3282,6 +3282,9 @@ static int folio_inc_gen(struct lruvec *lruvec, struct folio *folio, bool reclai
 
 	lru_gen_update_size(lruvec, folio, old_gen, new_gen);
 
+	//hayong
+	folio_coldclount_inc(folio);
+
 	return new_gen;
 }
 

@@ -2883,8 +2883,6 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
     if (knice_should_demote(current, folio) && curnid == 0) {
         ret = CXL_NODE;
         goto out;
-    } else {
-        folio_coldcount_reset(folio);
     }
 
     if (pol->flags & MPOL_F_MORON) {
