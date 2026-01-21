@@ -2448,7 +2448,7 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		folio = pmd_folio(*pmd);
 
 		//hayong
-		if (folio && !pte_young(oldpte))
+		if (folio && !pte_young(oldpmd))
 		{
 			int score = 1;
 
