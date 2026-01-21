@@ -1944,13 +1944,16 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
             return true;
     }
 
-    if (mode == KNICE_LEVEL_BOOST) { 
+    if (mode == KNICE_LEVEL_BOOST) 
+	{ 
         req_coldcount = 3;
-    } else { 
+    } 
+	else 
+	{ 
         req_coldcount = 5;
     }
 
-	printk_ratelimited(KERN_INFO "[FOLIO DEMOTE] pid=%d mode = %d coldcount=%d req_coldcount=%d\n", current->pid, mode, folio->cold_count, req_coldcount);
+	printk_ratelimited(KERN_INFO "[FOLIO DEMOTE] pid=%d mode = %d coldcount=%d\n", current->pid, mode, folio->cold_count);
 	
     if (!folio_test_cold(folio, req_coldcount))
         return false;
