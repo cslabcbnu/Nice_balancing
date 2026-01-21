@@ -1662,6 +1662,13 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
 
 	set_page_private(page, 0);
 
+	//hayong
+	struct folio *folio = page_folio(page);
+    if (!folio_test_ksm(folio)) {
+        folio_coldcount_reset(folio);
+    }
+	//hayong end
+
 	arch_alloc_page(page, order);
 	debug_pagealloc_map_pages(page, 1 << order);
 

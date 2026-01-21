@@ -96,6 +96,12 @@ static void page_cache_release(struct folio *folio)
 
 void __folio_put(struct folio *folio)
 {
+	//hayong
+	if (!folio_test_ksm(folio)) {
+        folio_coldcount_reset(folio);
+    }
+	//hayong end
+	
 	if (unlikely(folio_is_zone_device(folio))) {
 		free_zone_device_folio(folio);
 		return;
