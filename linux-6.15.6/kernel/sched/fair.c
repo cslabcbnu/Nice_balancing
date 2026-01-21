@@ -1972,12 +1972,14 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
     int last_cpupid, this_cpupid;
     int niceval = task_nice(current);
 
-    if (sysctl_knice_cold_balancing == KNICE_LEVEL_URGENT &&
-        niceval >= 0 && src_nid == 1)
-        return false;
+    if (sysctl_knice_cold_balancing == KNICE_LEVEL_URGENT && niceval >= 0 && src_nid == 1) {
+		return false;
+	}
 
-    if (!node_state(dst_nid, N_MEMORY))
-        return false;
+    if (!node_state(dst_nid, N_MEMORY)){
+		return false;
+	}
+		
 
 	if (folio_use_access_time(folio)) {
 		struct pglist_data *pgdat;
@@ -1998,16 +2000,16 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
 
 		th = pgdat->nbp_threshold ? : def_th;
 		latency = numa_hint_fault_latency(folio);
+
 		if (latency >= th) {
 			if (!folio_is_zone_device(folio) &&
                 node_is_toptier(folio_nid(folio))) {
                 folio_coldcount_inc(folio);
+				return false;
             }
 		}
-			return false;
-
-		return !numa_promotion_rate_limit(pgdat, rate_limit,
-						  folio_nr_pages(folio));
+	
+		return !numa_promotion_rate_limit(pgdat, rate_limit, folio_nr_pages(folio));
 	}
 
 
