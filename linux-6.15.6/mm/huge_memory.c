@@ -2434,13 +2434,32 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		if (pmd_protnone(*pmd)) {
 			struct folio *folio = pmd_folio(*pmd);
 
-			if(folio){
-				folio_coldcount_inc(folio);
+			if (folio) {
+				int score = 1;
+
+				if(!folio_test_active(folio))
+					score += 2;
+
+				folio_coldcount_add(folio, score);
 			}
 		}
 			goto unlock;
 
 		folio = pmd_folio(*pmd);
+
+		//hayong
+		if (folio && !pte_young(oldpte))
+		{
+			int score = 1;
+
+			if (!folio_test_referenced(folio)) score++;
+			if (!folio_test_active(folio)) score++;
+
+			folio_coldcount_add(folio, score);
+
+		}
+		//hayong end
+
 		toptier = node_is_toptier(folio_nid(folio));
 		/*
 		 * Skip scanning top tier node if normal numa

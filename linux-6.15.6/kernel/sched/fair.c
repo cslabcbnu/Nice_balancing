@@ -1965,121 +1965,105 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
 }
 
 bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
-				int src_nid, int dst_cpu)
+                int src_nid, int dst_cpu)
 {
-	struct numa_group *ng = deref_curr_numa_group(p);
-	int dst_nid = cpu_to_node(dst_cpu);
-	int last_cpupid, this_cpupid;
+    struct numa_group *ng = deref_curr_numa_group(p);
+    int dst_nid = cpu_to_node(dst_cpu);
+    int last_cpupid, this_cpupid;
+    int niceval = task_nice(current);
 
-	int niceval = task_nice(current);
+    /* URGENT 모드에서 CXL 노드(src_nid==1) → migration 막기 */
+    if (sysctl_knice_cold_balancing == KNICE_LEVEL_URGENT &&
+        niceval >= 0 && src_nid == 1)
+        return false;
 
-	if (sysctl_knice_cold_balancing == KNICE_LEVEL_URGENT && niceval >= 0 && src_nid == 1)
-		return false;
+    /* memoryless node로는 migration 불가 */
+    if (!node_state(dst_nid, N_MEMORY))
+        return false;
 
-	/*
-	 * Cannot migrate to memoryless nodes.
-	 */
-	if (!node_state(dst_nid, N_MEMORY))
-		return false;
+    /* folio가 access time 기반 hot/cold 판정 대상일 때 */
+    if (folio_use_access_time(folio)) {
+        struct pglist_data *pgdat;
+        unsigned long rate_limit;
+        unsigned int latency, th, def_th;
 
-	/*
-	 * The pages in slow memory node should be migrated according
-	 * to hot/cold instead of private/shared.
-	 */
-	if (folio_use_access_time(folio)) {
-		struct pglist_data *pgdat;
-		unsigned long rate_limit;
-		unsigned int latency, th, def_th;
+        pgdat = NODE_DATA(dst_nid);
+        if (pgdat_free_space_enough(pgdat)) {
+            pgdat->nbp_threshold = 0;
+            return true;
+        }
 
-		pgdat = NODE_DATA(dst_nid);
-		if (pgdat_free_space_enough(pgdat)) {
-			/* workload changed, reset hot threshold */
-			pgdat->nbp_threshold = 0;
-			return true;
-		}
+        def_th = sysctl_numa_balancing_hot_threshold;
+        rate_limit = sysctl_numa_balancing_promote_rate_limit << (20 - PAGE_SHIFT);
+        numa_promotion_adjust_threshold(pgdat, rate_limit, def_th);
 
-		def_th = sysctl_numa_balancing_hot_threshold;
-		rate_limit = sysctl_numa_balancing_promote_rate_limit << \
-			(20 - PAGE_SHIFT);
-		numa_promotion_adjust_threshold(pgdat, rate_limit, def_th);
+        th = pgdat->nbp_threshold ? : def_th;
+        latency = numa_hint_fault_latency(folio);
 
-		th = pgdat->nbp_threshold ? : def_th;
-		latency = numa_hint_fault_latency(folio);
-		if (latency >= th){
-			folio_coldcount_inc(folio);
-			return false;
-		}
-			
+        /* latency가 threshold 이상 → DRAM folio라면 coldcount 증가 */
+        if (latency >= th) {
+            if (!folio_is_zone_device(folio) &&
+                node_is_toptier(folio_nid(folio))) {
+                folio_coldcount_inc(folio);
+            }
+            return false;
+        }
 
-		return !numa_promotion_rate_limit(pgdat, rate_limit,
-						  folio_nr_pages(folio));
-	}
+        /* promote rate limit에 걸려서 migration 불가 → DRAM folio라면 coldcount 증가 */
+        if (!numa_promotion_rate_limit(pgdat, rate_limit, folio_nr_pages(folio))) {
+            return true;
+        } else {
+            if (!folio_is_zone_device(folio) &&
+                node_is_toptier(folio_nid(folio))) {
+                folio_coldcount_inc(folio);
+            }
+            return false;
+        }
+    }
 
-	this_cpupid = cpu_pid_to_cpupid(dst_cpu, current->pid);
-	last_cpupid = folio_xchg_last_cpupid(folio, this_cpupid);
+    this_cpupid = cpu_pid_to_cpupid(dst_cpu, current->pid);
+    last_cpupid = folio_xchg_last_cpupid(folio, this_cpupid);
 
-	if (!(sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) &&
-	    !node_is_toptier(src_nid) && !cpupid_valid(last_cpupid))
-		return false;
+    /* tiering 비활성화 + toptier mismatch → DRAM folio라면 coldcount 증가 */
+    if (!(sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) &&
+        !node_is_toptier(src_nid) && !cpupid_valid(last_cpupid) &&
+        !sysctl_knice_cold_balancing) {
+        if (!folio_is_zone_device(folio) &&
+            node_is_toptier(folio_nid(folio))) {
+            folio_coldcount_inc(folio);
+        }
+        return false;
+    }
 
-	/*
-	 * Allow first faults or private faults to migrate immediately early in
-	 * the lifetime of a task. The magic number 4 is based on waiting for
-	 * two full passes of the "multi-stage node selection" test that is
-	 * executed below.
-	 */
-	if ((p->numa_preferred_nid == NUMA_NO_NODE || p->numa_scan_seq <= 4) &&
-	    (cpupid_pid_unset(last_cpupid) || cpupid_match_pid(p, last_cpupid)))
-		return true;
+    /* cpupid mismatch → DRAM folio라면 coldcount 증가 */
+    if (!cpupid_pid_unset(last_cpupid) &&
+        cpupid_to_nid(last_cpupid) != dst_nid) {
+        if (!folio_is_zone_device(folio) &&
+            node_is_toptier(folio_nid(folio))) {
+            folio_coldcount_inc(folio);
+        }
+        return false;
+    }
 
-	/*
-	 * Multi-stage node selection is used in conjunction with a periodic
-	 * migration fault to build a temporal task<->page relation. By using
-	 * a two-stage filter we remove short/unlikely relations.
-	 *
-	 * Using P(p) ~ n_p / n_t as per frequentist probability, we can equate
-	 * a task's usage of a particular page (n_p) per total usage of this
-	 * page (n_t) (in a given time-span) to a probability.
-	 *
-	 * Our periodic faults will sample this probability and getting the
-	 * same result twice in a row, given these samples are fully
-	 * independent, is then given by P(n)^2, provided our sample period
-	 * is sufficiently short compared to the usage pattern.
-	 *
-	 * This quadric squishes small probabilities, making it less likely we
-	 * act on an unlikely task<->page relation.
-	 */
-	if (!cpupid_pid_unset(last_cpupid) &&
-				cpupid_to_nid(last_cpupid) != dst_nid)
-		return false;
+    /* 이후 로직은 기존과 동일 */
+    if ((p->numa_preferred_nid == NUMA_NO_NODE || p->numa_scan_seq <= 4) &&
+        (cpupid_pid_unset(last_cpupid) || cpupid_match_pid(p, last_cpupid)))
+        return true;
 
-	/* Always allow migrate on private faults */
-	if (cpupid_match_pid(p, last_cpupid))
-		return true;
+    if (cpupid_match_pid(p, last_cpupid))
+        return true;
 
-	/* A shared fault, but p->numa_group has not been set up yet. */
-	if (!ng)
-		return true;
+    if (!ng)
+        return true;
 
-	/*
-	 * Destination node is much more heavily used than the source
-	 * node? Allow migration.
-	 */
-	if (group_faults_cpu(ng, dst_nid) > group_faults_cpu(ng, src_nid) *
-					ACTIVE_NODE_FRACTION)
-		return true;
+    if (group_faults_cpu(ng, dst_nid) > group_faults_cpu(ng, src_nid) *
+                    ACTIVE_NODE_FRACTION)
+        return true;
 
-	/*
-	 * Distribute memory according to CPU & memory use on each node,
-	 * with 3/4 hysteresis to avoid unnecessary memory migrations:
-	 *
-	 * faults_cpu(dst)   3   faults_cpu(src)
-	 * --------------- * - > ---------------
-	 * faults_mem(dst)   4   faults_mem(src)
-	 */
-	return group_faults_cpu(ng, dst_nid) * group_faults(p, src_nid) * 3 >
-	       group_faults_cpu(ng, src_nid) * group_faults(p, dst_nid) * 4;
+    return group_faults_cpu(ng, dst_nid) * group_faults(p, src_nid) * 3 >
+           group_faults_cpu(ng, src_nid) * group_faults(p, dst_nid) * 4;
 }
+
 
 /*
  * 'numa_type' describes the node at the moment of load balancing.

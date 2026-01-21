@@ -130,7 +130,12 @@ static long change_pte_range(struct mmu_gather *tlb,
 					folio = vm_normal_folio(vma, addr, oldpte);
 
 					if (folio) {
-						folio_coldcount_inc(folio);
+
+						int score = 1;
+						if(!folio_test_active(folio))
+							score += 2;
+
+						folio_coldcount_add(folio, score);
 						}
 						continue;
 					}
@@ -156,6 +161,18 @@ static long change_pte_range(struct mmu_gather *tlb,
 				    folio_test_dirty(folio))
 					continue;
 
+				//hayong
+				if (folio && !pte_young(oldpte))
+				{
+					int score = 1;
+
+					if (!folio_test_referenced(folio)) score++;
+					if (!folio_test_active(folio)) score++;
+
+					folio_coldcount_add(folio, score);
+
+				}
+				//hayong end
 				/*
 				 * Don't mess with PTEs if page is already on the node
 				 * a single-threaded process is running on.
