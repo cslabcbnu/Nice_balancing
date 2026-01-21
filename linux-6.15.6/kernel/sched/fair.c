@@ -1953,7 +1953,7 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
         req_coldcount = 5;
     }
 
-	printk_ratelimited(KERN_INFO "[FOLIO DEMOTE] pid=%d mode = %d coldcount=%d\n", current->pid, mode, folio->cold_count);
+	printk_ratelimited(KERN_INFO "[FOLIO DEMOTE] pid=%d mode = %d coldcount=%d\n", current->pid, mode, folio_coldcount(folio));
 	
     if (!folio_test_cold(folio, req_coldcount))
         return false;
