@@ -1927,7 +1927,11 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
 {
     int niceval = task_nice(p);
     int mode = READ_ONCE(sysctl_knice_cold_balancing);
+	int req_coldcount;
 
+	if (niceval < 0)
+        return false;
+		
     if (mode == KNICE_LEVEL_OFF) {
 		return false;
 	}
@@ -1936,43 +1940,18 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
 		return false;
 	}
 
-
     if (mode == KNICE_LEVEL_URGENT) {
-        if (niceval >= 0) 
-		{
             return true;
-        }
-		else 
-		{
-            return false;
-        }
     }
-
-    int req_coldcount;
-    unsigned long req_interval = 0;
-    int req_latency = 0;
 
     if (mode == KNICE_LEVEL_BOOST) { 
         req_coldcount = 3;
     } else { 
         req_coldcount = 5;
-        req_interval = 2 * HZ;
-        req_latency = 1000;
     }
-
-    if (niceval < 0)
-        return false;
 
     if (!folio_test_cold(folio, req_coldcount))
         return false;
-
-    if (p->knice_avg_interval <= req_interval)
-        return false;
-
-    if (folio_use_access_time(folio)) {
-        if (numa_hint_fault_latency(folio) < req_latency)
-            return false;
-    }
 
     return true;
 }
@@ -3242,22 +3221,6 @@ void task_numa_fault(int last_cpupid, int mem_node, int pages, int flags)
 	if (!p->mm)
 		return;
 	
-
-	//hayong
-	unsigned long now = jiffies;
-	if(p->last_knice_fault_time) {
-		unsigned long diff = now - p->last_knice_fault_time;
-		if(p->knice_avg_interval == 0) {
-			p->knice_avg_interval = diff;
-		} else {
-			p->knice_avg_interval = (p->knice_avg_interval * 7 + diff) >> 3;
-		}
-	} else {
-		p->knice_avg_interval = HZ;
-	}
-	p->last_knice_fault_time = now;
-	//hayong end
-
 	/*
 	 * NUMA faults statistics are unnecessary for the slow memory
 	 * node for memory tiering mode.

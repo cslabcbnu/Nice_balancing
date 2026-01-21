@@ -95,6 +95,8 @@ static long change_pte_range(struct mmu_gather *tlb,
 	bool uffd_wp = cp_flags & MM_CP_UFFD_WP;
 	bool uffd_wp_resolve = cp_flags & MM_CP_UFFD_WP_RESOLVE;
 
+	extern int sysctl_knice_cold_balancing;
+
 	tlb_change_page_size(tlb, PAGE_SIZE);
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (!pte)
@@ -165,10 +167,11 @@ static long change_pte_range(struct mmu_gather *tlb,
 
 				/*
 				 * Skip scanning top tier node if normal numa
-				 * balancing is disabled
+				 * balancing is disabled 
 				 */
+				//hayong
 				if (!(sysctl_numa_balancing_mode & NUMA_BALANCING_NORMAL) &&
-				    toptier)
+				    toptier && !sysctl_knice_cold_balancing)
 					continue;
 				if (folio_use_access_time(folio))
 					folio_xchg_access_time(folio,

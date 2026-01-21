@@ -1397,8 +1397,6 @@ struct task_struct {
 	unsigned long			numa_faults_locality[3];
 
 	unsigned long			numa_pages_migrated;
-	unsigned long			last_knice_fault_time;
-	unsigned long			knice_avg_interval;
 #endif /* CONFIG_NUMA_BALANCING */
 
 #ifdef CONFIG_RSEQ
