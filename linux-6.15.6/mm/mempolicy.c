@@ -2823,6 +2823,7 @@ int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
     int ret = NUMA_NO_NODE;
 
 	extern int sysctl_knice_cold_balancing;
+	READ_ONCE(sysctl_knice_cold_balancing);
 	int niceval = task_nice(current);
 
 
