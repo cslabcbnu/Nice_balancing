@@ -58,6 +58,11 @@
 #include "stats.h"
 #include "autogroup.h"
 
+//hayong
+#define CXL_NODE	1
+
+extern int sysctl_knice_cold_balancing;
+
 /*
  * The initial- and re-scaling of tunables is configurable
  *
@@ -1919,10 +1924,6 @@ static void numa_promotion_adjust_threshold(struct pglist_data *pgdat,
 	}
 }
 
-#define CXL_NODE	1
-
-extern int sysctl_knice_cold_balancing;
-
 bool knice_should_demote(struct task_struct *p, struct folio *folio)
 {
     int niceval = task_nice(p);
@@ -1941,7 +1942,8 @@ bool knice_should_demote(struct task_struct *p, struct folio *folio)
 	}
 
     if (mode == KNICE_LEVEL_URGENT) {
-            return true;
+
+        return true;
     }
 
     if (mode == KNICE_LEVEL_BOOST) 
@@ -1967,15 +1969,10 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
     int last_cpupid, this_cpupid;
     int niceval = task_nice(current);
 
-    if (sysctl_knice_cold_balancing == KNICE_LEVEL_URGENT && niceval >= 0 && src_nid == 1) {
-		return false;
-	}
-
     if (!node_state(dst_nid, N_MEMORY)){
 		return false;
 	}
 		
-
 	if (folio_use_access_time(folio)) {
 		struct pglist_data *pgdat;
 		unsigned long rate_limit;
@@ -3356,6 +3353,13 @@ static void task_numa_work(struct callback_head *work)
 		p->numa_scan_period_max = task_scan_max(p);
 		p->numa_scan_period = task_scan_start(p);
 	}
+
+	//hayong
+	if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT) {
+    	// 스캔 주기를 절반으로 줄임
+    	p->numa_scan_period = max(1UL, p->numa_scan_period / 2);
+	}
+
 
 	next_scan = now + msecs_to_jiffies(p->numa_scan_period);
 	if (!try_cmpxchg(&mm->numa_next_scan, &migrate, next_scan))
