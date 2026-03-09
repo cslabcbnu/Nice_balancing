@@ -3353,13 +3353,11 @@ static void task_numa_work(struct callback_head *work)
 		p->numa_scan_period_max = task_scan_max(p);
 		p->numa_scan_period = task_scan_start(p);
 	}
-
+	int mode = READ_ONCE(sysctl_knice_cold_balancing);
 	//hayong
-	if (READ_ONCE(sysctl_knice_cold_balancing) == KNICE_LEVEL_URGENT) {
-    	// 스캔 주기를 절반으로 줄임
+	if (task_nice(p) < 0 && mode == KNICE_LEVEL_URGENT) {
     	p->numa_scan_period = max(1UL, p->numa_scan_period / 2);
 	}
-
 
 	next_scan = now + msecs_to_jiffies(p->numa_scan_period);
 	if (!try_cmpxchg(&mm->numa_next_scan, &migrate, next_scan))
