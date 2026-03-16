@@ -1968,6 +1968,12 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
     int dst_nid = cpu_to_node(dst_cpu);
     int last_cpupid, this_cpupid;
 
+	int niceval = task_nice(current);
+
+	if (sysctl_knice_cold_balancing == KNICE_LEVEL_URGENT && niceval >= 0 && src_nid == 1) {
+		return false;
+	}
+
     if (!node_state(dst_nid, N_MEMORY)){
 		return false;
 	}
