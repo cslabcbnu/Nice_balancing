@@ -2959,6 +2959,9 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader,
 
 	return ret;
 }
+#ifdef CONFIG_CGTIER
+EXPORT_SYMBOL_GPL(cgroup_attach_task);
+#endif
 
 struct task_struct *cgroup_procs_write_start(char *buf, bool threadgroup,
 					     bool *threadgroup_locked)

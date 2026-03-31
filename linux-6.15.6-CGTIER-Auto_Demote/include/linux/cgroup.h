@@ -138,6 +138,11 @@ int cgroup_init(void);
 
 int cgroup_parse_float(const char *input, unsigned dec_shift, s64 *v);
 
+#ifdef CONFIG_CGTIER
+int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader,
+                       bool threadgroup);
+#endif
+
 /*
  * Iteration helpers and macros.
  */
