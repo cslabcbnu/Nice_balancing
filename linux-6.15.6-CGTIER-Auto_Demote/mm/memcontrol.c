@@ -5779,13 +5779,13 @@ EXPORT_SYMBOL(nonvip_memcg);
 struct task_struct *cgroup_migrate_kt;
 struct task_struct *reclaim_control_kt;
 
-/* 전역으로 css도 보관 */
-static struct cgroup_subsys_state *vip_css   = NULL;
-static struct cgroup_subsys_state *nonvip_css = NULL;
+static struct cgroup *vip_cgrp_global    = NULL;
+static struct cgroup *nonvip_cgrp_global = NULL;
 
 static int init_vip_nonvip_memcg(void)
 {
     struct cgroup *vip_cgrp, *nonvip_cgrp;
+    struct cgroup_subsys_state *css;
 
     vip_cgrp = cgroup_get_from_path("/vip.slice");
     if (IS_ERR(vip_cgrp))
@@ -5797,16 +5797,18 @@ static int init_vip_nonvip_memcg(void)
         return -ENOENT;
     }
 
-    vip_css = cgroup_get_e_css(vip_cgrp, &memory_cgrp_subsys);
-    vip_memcg = mem_cgroup_from_css(vip_css);
-    /* vip_css는 해제하지 않음 → memcg 참조 유지 */
+    /* cgroup 참조 전역 보관 (put 안함) */
+    vip_cgrp_global    = vip_cgrp;
+    nonvip_cgrp_global = nonvip_cgrp;
 
-    nonvip_css = cgroup_get_e_css(nonvip_cgrp, &memory_cgrp_subsys);
-    nonvip_memcg = mem_cgroup_from_css(nonvip_css);
-    /* nonvip_css는 해제하지 않음 → memcg 참조 유지 */
+    /* memcg 포인터 설정 후 css는 즉시 put */
+    css = cgroup_get_e_css(vip_cgrp, &memory_cgrp_subsys);
+    vip_memcg = mem_cgroup_from_css(css);
+    css_put(css);
 
-    cgroup_put(vip_cgrp);
-    cgroup_put(nonvip_cgrp);
+    css = cgroup_get_e_css(nonvip_cgrp, &memory_cgrp_subsys);
+    nonvip_memcg = mem_cgroup_from_css(css);
+    css_put(css);
 
     return 0;
 }
