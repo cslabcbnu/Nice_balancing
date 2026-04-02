@@ -2665,14 +2665,11 @@ __latent_entropy struct task_struct *copy_process(
 
 	copy_oom_score_adj(clone_flags, p);
 
+	/* copy_process()에서 유지할 부분 */
 #ifdef CONFIG_CGTIER
-	p->vip_migrate_pending = 0;
+	p->vip_migrate_pending    = 0;
 	p->nonvip_migrate_pending = 0;
-	
-	if (!(p->flags & PF_KTHREAD) && p->mm != NULL) {
-		WRITE_ONCE(p->nonvip_migrate_pending, 1);
-		wake_up_process(cgroup_migrate_kt);
-	}
+	/* wake_up_process는 제거 */
 #endif
 
 	return p;

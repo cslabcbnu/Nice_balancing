@@ -1875,6 +1875,18 @@ static int bprm_execve(struct linux_binprm *bprm)
 	user_events_execve(current);
 	acct_update_integrals(current);
 	task_numa_free(current, false);
+
+#ifdef CONFIG_CGTIER
+	
+	if (!(current->flags & PF_KTHREAD) && current->mm) {
+		if (task_nice(current) < 0)
+			WRITE_ONCE(current->vip_migrate_pending, 1);
+		else
+			WRITE_ONCE(current->nonvip_migrate_pending, 1);
+		wake_up_process(cgroup_migrate_kt);
+	}
+#endif
+
 	return retval;
 
 out:
