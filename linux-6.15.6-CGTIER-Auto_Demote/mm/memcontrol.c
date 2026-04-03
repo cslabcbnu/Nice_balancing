@@ -5861,13 +5861,6 @@ static int cgroup_migrate_kthread_fn(void *data)
     return 0;
 }
 
-static int cgroup_migrate_kthread_fn(void *data)
-{
-    while (!kthread_should_stop())
-        msleep(1000);
-    return 0;
-}
-
 #define MIN_LIMIT (512L * 1024 * 1024)
 
 static int reclaim_control_kthread_fn(void *data)
