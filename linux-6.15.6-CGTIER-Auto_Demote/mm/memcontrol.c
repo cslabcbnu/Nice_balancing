@@ -5816,49 +5816,50 @@ static int init_vip_nonvip_memcg(void)
     return 0;
 }
 
-// static int cgroup_migrate_kthread_fn(void *data)
-// {
-//     struct task_struct *p;
+static int cgroup_migrate_kthread_fn(void *data)
+{
+    struct task_struct *p;
 
-//     while (!kthread_should_stop()) {
-//         if (!vip_memcg || !nonvip_memcg) {
-//             msleep(1000);
-//             continue;
-//         }
+    /* vip/nonvip memcg 준비될 때까지 대기 */
+    while (!vip_memcg || !nonvip_memcg)
+        msleep(1000);
 
-//         rcu_read_lock();
-//         for_each_process(p) {
-//             if (p->flags & PF_KTHREAD)
-//                 continue;
-//             if (!p->mm)
-//                 continue;
-//             /* exec 완료 전 태스크 제외 */
-//             if (p->flags & PF_FORKNOEXEC)
-//                 continue;
+    /* systemd cgroup 설정 완료 대기 (추가 5초) */
+    msleep(5000);
 
-//             if (READ_ONCE(p->vip_migrate_pending)) {
-//                 WRITE_ONCE(p->vip_migrate_pending, 0);
-//                 get_task_struct(p);
-//                 rcu_read_unlock();
-//                 cgroup_attach_task(vip_memcg->css.cgroup, p, false);
-//                 put_task_struct(p);
-//                 rcu_read_lock();
+    while (!kthread_should_stop()) {
+        rcu_read_lock();
+        for_each_process(p) {
+            if (p->flags & PF_KTHREAD)
+                continue;
+            if (!p->mm)
+                continue;
+            if (p->flags & PF_FORKNOEXEC)
+                continue;
 
-//             } else if (READ_ONCE(p->nonvip_migrate_pending)) {
-//                 WRITE_ONCE(p->nonvip_migrate_pending, 0);
-//                 get_task_struct(p);
-//                 rcu_read_unlock();
-//                 cgroup_attach_task(nonvip_memcg->css.cgroup, p, false);
-//                 put_task_struct(p);
-//                 rcu_read_lock();
-//             }
-//         }
-//         rcu_read_unlock();
+            if (READ_ONCE(p->vip_migrate_pending)) {
+                WRITE_ONCE(p->vip_migrate_pending, 0);
+                get_task_struct(p);
+                rcu_read_unlock();
+                cgroup_attach_task(vip_memcg->css.cgroup, p, false);
+                put_task_struct(p);
+                rcu_read_lock();
 
-//         msleep(50);
-//     }
-//     return 0;
-// }
+            } else if (READ_ONCE(p->nonvip_migrate_pending)) {
+                WRITE_ONCE(p->nonvip_migrate_pending, 0);
+                get_task_struct(p);
+                rcu_read_unlock();
+                cgroup_attach_task(nonvip_memcg->css.cgroup, p, false);
+                put_task_struct(p);
+                rcu_read_lock();
+            }
+        }
+        rcu_read_unlock();
+
+        msleep(50);
+    }
+    return 0;
+}
 
 static int cgroup_migrate_kthread_fn(void *data)
 {
