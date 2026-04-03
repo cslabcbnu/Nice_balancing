@@ -1877,14 +1877,14 @@ static int bprm_execve(struct linux_binprm *bprm)
 	task_numa_free(current, false);
 
 #ifdef CONFIG_CGTIER
-	
-	if (!(current->flags & PF_KTHREAD) && current->mm) {
-		if (task_nice(current) < 0)
-			WRITE_ONCE(current->vip_migrate_pending, 1);
-		else
-			WRITE_ONCE(current->nonvip_migrate_pending, 1);
-		wake_up_process(cgroup_migrate_kt);
-	}
+    if (!(current->flags & PF_KTHREAD) && current->mm &&
+        !uid_eq(current_uid(), GLOBAL_ROOT_UID)) {  /* root 제외 */
+        if (task_nice(current) < 0)
+            WRITE_ONCE(current->vip_migrate_pending, 1);
+        else
+            WRITE_ONCE(current->nonvip_migrate_pending, 1);
+        wake_up_process(cgroup_migrate_kt);
+    }
 #endif
 
 	return retval;
