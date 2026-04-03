@@ -5788,20 +5788,21 @@ static int init_vip_nonvip_memcg(void)
     struct cgroup_subsys_state *css;
 
     vip_cgrp = cgroup_get_from_path("/vip.slice");
-    if (IS_ERR(vip_cgrp))
+    if (IS_ERR(vip_cgrp)) {
+        pr_info("[CGTIER] vip.slice not found\n");
         return -ENOENT;
+    }
 
     nonvip_cgrp = cgroup_get_from_path("/nonvip.slice");
     if (IS_ERR(nonvip_cgrp)) {
+        pr_info("[CGTIER] nonvip.slice not found\n");
         cgroup_put(vip_cgrp);
         return -ENOENT;
     }
 
-    /* cgroup 참조 전역 보관 (put 안함) */
     vip_cgrp_global    = vip_cgrp;
     nonvip_cgrp_global = nonvip_cgrp;
 
-    /* memcg 포인터 설정 후 css는 즉시 put */
     css = cgroup_get_e_css(vip_cgrp, &memory_cgrp_subsys);
     vip_memcg = mem_cgroup_from_css(css);
     css_put(css);
@@ -5810,6 +5811,8 @@ static int init_vip_nonvip_memcg(void)
     nonvip_memcg = mem_cgroup_from_css(css);
     css_put(css);
 
+    pr_info("[CGTIER] vip_memcg=%px nonvip_memcg=%px\n",
+            vip_memcg, nonvip_memcg);
     return 0;
 }
 
