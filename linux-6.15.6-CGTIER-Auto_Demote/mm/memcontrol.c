@@ -5889,8 +5889,7 @@ static int reclaim_control_kthread_fn(void *data)
 
             /* nonvip 전체 DRAM 사용량 합산 */
             for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                if (memcg == nonvip_memcg)
-                    continue;
+            
                 total_nonvip_dram +=
                     page_counter_read_per_tier(&memcg->memory, 0);
             }
@@ -5918,8 +5917,6 @@ static int reclaim_control_kthread_fn(void *data)
             struct mem_cgroup *memcg;
 
             for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                if (memcg == nonvip_memcg)
-                    continue;
 
                 unsigned long dram =
                     page_counter_read_per_tier(&memcg->memory, 0);
@@ -5934,8 +5931,7 @@ static int reclaim_control_kthread_fn(void *data)
             struct mem_cgroup *memcg;
 
             for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                if (memcg == nonvip_memcg)
-                    continue;
+
                 page_counter_set_high_per_tier(&memcg->memory,
                                                PAGE_COUNTER_MAX, 0);
             }
