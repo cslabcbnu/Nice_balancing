@@ -5897,8 +5897,6 @@ static int reclaim_control_kthread_fn(void *data)
 
             /* 각 nonvip memcg의 high_per_tier[0] 조정 */
             for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                if (memcg == nonvip_memcg)
-                    continue;
 
                 unsigned long dram =
                     page_counter_read_per_tier(&memcg->memory, 0);
