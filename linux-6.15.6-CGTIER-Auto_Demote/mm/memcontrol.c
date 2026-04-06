@@ -5782,6 +5782,8 @@ struct task_struct *reclaim_control_kt;
 static struct cgroup *vip_cgrp_global    = NULL;
 static struct cgroup *nonvip_cgrp_global = NULL;
 
+#define VIP_CXL_THRESHOLD (100UL * 1024 * 1024 >> PAGE_SHIFT)
+
 static int init_vip_nonvip_memcg(void)
 {
     struct cgroup *vip_cgrp, *nonvip_cgrp;
@@ -5877,11 +5879,13 @@ static int reclaim_control_kthread_fn(void *data)
         bool kswapd_active = pgdat->kswapd &&
                              pgdat->kswapd->__state == TASK_RUNNING;
 
-        /* VIP CXL 사용량 확인 */
+        /* VIP CXL 사용량 확인 (실제 Node 1 사용량) */
+        struct mem_cgroup_per_node *vip_pn = vip_memcg->nodeinfo[1];
         unsigned long vip_cxl_usage =
-            page_counter_read_per_tier(&vip_memcg->memory, 1);
+            lruvec_page_state(&vip_pn->lruvec, NR_ANON_MAPPED) +
+            lruvec_page_state(&vip_pn->lruvec, NR_FILE_PAGES);
 
-        if (vip_cxl_usage > 0) {
+        if (vip_cxl_usage > VIP_CXL_THRESHOLD) {
             /* [VIP 모드] */
             unsigned long target_reclaim = vip_cxl_usage * 3 / 2;
             unsigned long total_nonvip_dram = 0;
@@ -5889,16 +5893,19 @@ static int reclaim_control_kthread_fn(void *data)
 
             /* nonvip 전체 DRAM 사용량 합산 */
             for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-            
+                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
                 total_nonvip_dram +=
-                    page_counter_read_per_tier(&memcg->memory, 0);
+                    lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
+                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
             }
 
             /* 각 nonvip memcg의 high_per_tier[0] 조정 */
             for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-
+                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
                 unsigned long dram =
-                    page_counter_read_per_tier(&memcg->memory, 0);
+                    lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
+                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
+
                 if (total_nonvip_dram == 0 || dram == 0)
                     continue;
 
@@ -5917,9 +5924,10 @@ static int reclaim_control_kthread_fn(void *data)
             struct mem_cgroup *memcg;
 
             for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-
+                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
                 unsigned long dram =
-                    page_counter_read_per_tier(&memcg->memory, 0);
+                    lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
+                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
                 unsigned long new_high = dram * 95 / 100;
 
                 page_counter_set_high_per_tier(&memcg->memory,
@@ -5931,7 +5939,6 @@ static int reclaim_control_kthread_fn(void *data)
             struct mem_cgroup *memcg;
 
             for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-
                 page_counter_set_high_per_tier(&memcg->memory,
                                                PAGE_COUNTER_MAX, 0);
             }
