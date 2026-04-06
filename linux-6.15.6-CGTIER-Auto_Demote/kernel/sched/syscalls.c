@@ -116,7 +116,9 @@ void set_user_nice(struct task_struct *p, long nice)
 		p->sched_class->prio_changed(rq, p, old_prio);
 
 #ifdef CONFIG_CGTIER
-		do_migrate = !(p->flags & PF_KTHREAD) && p->mm != NULL && !uid_eq(task_uid(p), GLOBAL_ROOT_UID);  /* root 제외 */
+		do_migrate = !(p->flags & PF_KTHREAD) && p->mm != NULL &&
+                     !uid_eq(task_uid(p), GLOBAL_ROOT_UID);
+		to_vip = (nice < 0);  /* 이 줄이 빠져있었어 */
 #endif
 
 	} 
