@@ -5893,90 +5893,69 @@ static int reclaim_control_kthread_fn(void *data)
         bool kswapd_active = pgdat->kswapd &&
                              pgdat->kswapd->__state == TASK_RUNNING;
         struct mem_cgroup *memcg;
+        
+        bool vip_exists = vip_has_tasks();
+        unsigned long vip_cxl_anon = 0;
+        unsigned long vip_cxl_usage = 0;
 
-        if (vip_has_tasks()) {
-            /* VIP 프로세스가 존재할 때만 CXL 사용량 체크 */
+        if (vip_exists) {
             struct mem_cgroup_per_node *vip_pn = vip_memcg->nodeinfo[1];
-            unsigned long vip_cxl_usage =
-                lruvec_page_state(&vip_pn->lruvec, NR_ANON_MAPPED) +
-                lruvec_page_state(&vip_pn->lruvec, NR_FILE_PAGES);
+            vip_cxl_anon = lruvec_page_state(&vip_pn->lruvec, NR_ANON_MAPPED);
+            vip_cxl_usage = vip_cxl_anon + lruvec_page_state(&vip_pn->lruvec, NR_FILE_PAGES);
+        }
 
-            if (vip_cxl_usage > VIP_CXL_THRESHOLD) {
-                /* [VIP 모드] */
-                unsigned long total_nonvip_dram = 0;
+        /* 712MB 임계값 설정 */
+        unsigned long cxl_anon_threshold = (712UL << 20) >> PAGE_SHIFT;
 
-                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                    struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
-                    total_nonvip_dram +=
-                        lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
-                        lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
-                }
-
-                /* target_reclaim이 total_nonvip_dram의 50% 초과 방지 */
-                unsigned long target_reclaim = vip_cxl_usage * 3 / 2;
-                if (target_reclaim > total_nonvip_dram / 2)
-                    target_reclaim = total_nonvip_dram / 2;
-
-                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                    struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
-                    unsigned long dram =
-                        lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
-                        lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
-
-                    if (total_nonvip_dram == 0 || dram == 0)
-                        continue;
-
-                    unsigned long share = dram * target_reclaim
-                                        / total_nonvip_dram;
-                    unsigned long new_high = (dram > share)
-                                           ? (dram - share)
-                                           : (MIN_LIMIT >> PAGE_SHIFT);
-
-                    page_counter_set_high_per_tier(&memcg->memory,
-                                                   new_high, 0);
-                }
-
-            } else if (kswapd_active) {
-                /* [PRE 모드] */
-                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                    struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
-                    unsigned long dram =
-                        lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
-                        lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
-                    unsigned long new_high = dram * 95 / 100;
-
-                    page_counter_set_high_per_tier(&memcg->memory,
-                                                   new_high, 0);
-                }
-
-            } else {
-                /* [NOR 모드] */
-                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                    page_counter_set_high_per_tier(&memcg->memory,
-                                                   PAGE_COUNTER_MAX, 0);
-                }
+        /* * [VIP 모드 진입 조건]
+         * 1. VIP 프로세스가 존재해야 함
+         * 2. VIP의 CXL Anon 할당량이 712MB를 초과해야 함
+         * 3. VIP의 전체 CXL 사용량이 설정한 임계값(VIP_CXL_THRESHOLD)을 초과해야 함
+         */
+        if (vip_exists && 
+            vip_cxl_anon > cxl_anon_threshold && 
+            vip_cxl_usage > VIP_CXL_THRESHOLD) {
+            
+            /* VIP 모드 로직 (non-VIP를 강하게 회수해서 CXL로 밀어냄) */
+            unsigned long total_nonvip_dram = 0;
+            for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
+                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
+                total_nonvip_dram += lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
+                                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
             }
 
-        } else {
-            /* VIP 프로세스 없음 → NOR 또는 PRE 모드 */
-            if (kswapd_active) {
-                /* [PRE 모드] */
-                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                    struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
-                    unsigned long dram =
-                        lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
-                        lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
-                    unsigned long new_high = dram * 95 / 100;
+            unsigned long target_reclaim = vip_cxl_usage * 3 / 2;
+            if (target_reclaim > total_nonvip_dram / 2)
+                target_reclaim = total_nonvip_dram / 2;
 
-                    page_counter_set_high_per_tier(&memcg->memory,
-                                                   new_high, 0);
-                }
-            } else {
-                /* [NOR 모드] */
-                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                    page_counter_set_high_per_tier(&memcg->memory,
-                                                   PAGE_COUNTER_MAX, 0);
-                }
+            for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
+                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
+                unsigned long dram = lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
+                                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
+
+                if (total_nonvip_dram == 0 || dram == 0) continue;
+
+                unsigned long share = dram * target_reclaim / total_nonvip_dram;
+                unsigned long new_high = (dram > share) ? (dram - share) : (MIN_LIMIT >> PAGE_SHIFT);
+                page_counter_set_high_per_tier(&memcg->memory, new_high, 0);
+            }
+
+        } else if (kswapd_active) {
+            /* * [PRE 모드]
+             * VIP가 없거나, VIP가 있어도 CXL 사용량이 적을 때(712MB 이하 등)
+             * 하지만 시스템 전반에 메모리 압박이 있어 kswapd가 돌고 있다면 진입
+             */
+            for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
+                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
+                unsigned long dram = lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
+                                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
+                unsigned long new_high = dram * 95 / 100;
+                page_counter_set_high_per_tier(&memcg->memory, new_high, 0);
+            }
+        } else {
+            /* [NOR 모드] 평온한 상태 */
+            for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
+                page_counter_set_high_per_tier(&memcg->memory, PAGE_COUNTER_MAX, 0);
             }
         }
 
