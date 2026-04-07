@@ -5863,13 +5863,21 @@ static int cgroup_migrate_kthread_fn(void *data)
     return 0;
 }
 
-#define MIN_LIMIT (512L * 1024 * 1024)
+/* * 이미 위쪽(5774, 5775라인)에 vip_memcg, nonvip_memcg가 정의되어 있으므로 
+ * 여기서는 다시 선언하지 않습니다. 
+ * 매크로(MIN_LIMIT, VIP_CXL_THRESHOLD)도 상단에 정의된 것을 사용하도록 합니다.
+ */
+
+static unsigned long last_high_val = PAGE_COUNTER_MAX; // 이전 사이클 설정값 저장용
 
 static bool vip_has_tasks(void)
 {
     struct css_task_iter it;
     struct task_struct *p;
     bool found = false;
+
+    if (!vip_memcg)
+        return false;
 
     css_task_iter_start(&vip_memcg->css, 0, &it);
     p = css_task_iter_next(&it);
@@ -5880,22 +5888,15 @@ static bool vip_has_tasks(void)
     return found;
 }
 
-/* 전역 변수 및 설정 */
-static struct mem_cgroup *vip_memcg = NULL;
-static struct mem_cgroup *nonvip_memcg = NULL;
-static unsigned long last_high_val = PAGE_COUNTER_MAX; // 이전 사이클의 설정값 저장
-
-/* 시스템 상황에 맞게 조정이 필요한 매크로 */
-#define MIN_LIMIT (1UL << 30) // 최소 1GB 보장
-#define VIP_CXL_THRESHOLD ((712UL << 20) >> PAGE_SHIFT)
-
 static int reclaim_control_kthread_fn(void *data)
 {
     /* Node 0의 전체 물리 페이지 수 계산 */
     unsigned long total_dram_pages = NODE_DATA(0)->node_present_pages;
 
+    /* memcg 초기화 대기 */
     while (!vip_memcg || !nonvip_memcg) {
-        if (init_vip_nonvip_memcg() == 0) break;
+        if (init_vip_nonvip_memcg() == 0)
+            break;
         msleep(1000);
     }
 
@@ -5903,7 +5904,8 @@ static int reclaim_control_kthread_fn(void *data)
 
     while (!kthread_should_stop()) {
         pg_data_t *pgdat = NODE_DATA(0);
-        bool kswapd_active = pgdat->kswapd && pgdat->kswapd->__state == TASK_RUNNING;
+        bool kswapd_active = pgdat->kswapd && 
+                             pgdat->kswapd->__state == TASK_RUNNING;
         
         bool vip_exists = vip_has_tasks();
         unsigned long vip_cxl_usage = 0;
@@ -5918,10 +5920,11 @@ static int reclaim_control_kthread_fn(void *data)
             vip_cxl_usage = lruvec_page_state(&vip_pn1->lruvec, NR_ANON_MAPPED);
         }
 
+        /* * VIP_CXL_THRESHOLD와 MIN_LIMIT는 
+         * 상단(5785, 5866라인)에 정의된 값을 그대로 사용합니다.
+         */
         if (vip_exists && vip_cxl_usage > VIP_CXL_THRESHOLD) {
-            /* * [VIP 모드] 
-             * 1. 누적 차감을 막기 위해 '전체 용량'에서 '목표치'를 뺀 절대값을 계산
-             */
+            /* [VIP 모드] 절대 기준선 방식 */
             unsigned long vip_protection_goal = vip_dram_usage + (vip_cxl_usage * 3 / 2);
             unsigned long new_high;
 
@@ -5930,22 +5933,19 @@ static int reclaim_control_kthread_fn(void *data)
             else
                 new_high = MIN_LIMIT >> PAGE_SHIFT;
 
-            /* * 2. 무분별한 업데이트 방지 (Deadband 로직)
-             * 이전 설정값과 현재 계산값의 차이가 전체 DRAM의 1%보다 클 때만 업데이트
-             */
+            /* Deadband 로직: 1% 이상 차이날 때만 업데이트 */
             unsigned long diff = (new_high > last_high_val) ? 
                                  (new_high - last_high_val) : 
                                  (last_high_val - new_high);
 
             if (diff > (total_dram_pages / 100)) {
-                /* 최상위 memcg만 설정해도 계층 구조에 따라 하위 프로세스에 적용됨 */
                 page_counter_set_high_per_tier(&nonvip_memcg->memory, new_high, 0);
                 last_high_val = new_high;
-                // pr_info("NICEBAL: VIP Mode - High updated to %lu\n", new_high);
+                // pr_info("NICEBAL: VIP Mode - High updated\n");
             }
 
         } else if (kswapd_active) {
-            /* [PRE 모드] 시스템 압박 시 현재 사용량의 95%로 일시적 제한 */
+            /* [PRE 모드] */
             struct mem_cgroup_per_node *npn = nonvip_memcg->nodeinfo[0];
             unsigned long current_dram = lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED);
             unsigned long pre_high = current_dram * 95 / 100;
@@ -5956,7 +5956,7 @@ static int reclaim_control_kthread_fn(void *data)
             }
 
         } else {
-            /* [NOR 모드] 평온한 상태 - 이전에 제한이 걸려 있었다면 풀어줌 */
+            /* [NOR 모드] 평온한 상태 */
             if (last_high_val != PAGE_COUNTER_MAX) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory, PAGE_COUNTER_MAX, 0);
                 last_high_val = PAGE_COUNTER_MAX;
