@@ -5882,81 +5882,71 @@ static bool vip_has_tasks(void)
 
 static int reclaim_control_kthread_fn(void *data)
 {
+    /* DRAM(Node 0)의 전체 물리 용량을 미리 계산 (예: 128GB 기준) 
+     * 실제 시스템의 totalram_pages 등을 참조하는 것이 좋으나, 
+     * 여기서는 이해를 위해 고정된 용량으로 예시를 듭니다. */
+    unsigned long total_dram_pages = NODE_DATA(0)->node_present_pages;
+
     while (!vip_memcg || !nonvip_memcg) {
-        if (init_vip_nonvip_memcg() == 0)
-            break;
+        if (init_vip_nonvip_memcg() == 0) break;
         msleep(1000);
     }
 
     while (!kthread_should_stop()) {
         pg_data_t *pgdat = NODE_DATA(0);
-        bool kswapd_active = pgdat->kswapd &&
-                             pgdat->kswapd->__state == TASK_RUNNING;
+        bool kswapd_active = pgdat->kswapd && pgdat->kswapd->__state == TASK_RUNNING;
         struct mem_cgroup *memcg;
         
         bool vip_exists = vip_has_tasks();
-        unsigned long vip_cxl_anon = 0;
         unsigned long vip_cxl_usage = 0;
+        unsigned long vip_dram_usage = 0;
 
         if (vip_exists) {
-            struct mem_cgroup_per_node *vip_pn = vip_memcg->nodeinfo[1];
-            vip_cxl_anon = lruvec_page_state(&vip_pn->lruvec, NR_ANON_MAPPED);
-            vip_cxl_usage = vip_cxl_anon + lruvec_page_state(&vip_pn->lruvec, NR_FILE_PAGES);
+            struct mem_cgroup_per_node *vip_node0 = vip_memcg->nodeinfo[0];
+            struct mem_cgroup_per_node *vip_node1 = vip_memcg->nodeinfo[1];
+            
+            /* VIP가 현재 DRAM과 CXL에서 각각 얼마나 쓰는지 측정 */
+            vip_dram_usage = lruvec_page_state(&vip_node0->lruvec, NR_ANON_MAPPED);
+            vip_cxl_usage = lruvec_page_state(&vip_node1->lruvec, NR_ANON_MAPPED);
         }
 
-        /* 712MB 임계값 설정 */
         unsigned long cxl_anon_threshold = (712UL << 20) >> PAGE_SHIFT;
 
-        /* * [VIP 모드 진입 조건]
-         * 1. VIP 프로세스가 존재해야 함
-         * 2. VIP의 CXL Anon 할당량이 712MB를 초과해야 함
-         * 3. VIP의 전체 CXL 사용량이 설정한 임계값(VIP_CXL_THRESHOLD)을 초과해야 함
-         */
-        if (vip_exists && 
-            vip_cxl_anon > cxl_anon_threshold && 
-            vip_cxl_usage > VIP_CXL_THRESHOLD) {
+        if (vip_exists && vip_cxl_usage > cxl_anon_threshold) {
+            /* * [VIP 모드 개선 로직]
+             * 핵심: non-VIP의 high 값은 'DRAM 전체'에서 'VIP 보호분'을 뺀 '상수'가 되어야 함.
+             */
             
-            /* VIP 모드 로직 (non-VIP를 강하게 회수해서 CXL로 밀어냄) */
-            unsigned long total_nonvip_dram = 0;
+            /* VIP가 DRAM으로 가져와야 할 목표치 = (현재 DRAM 사용량) + (CXL에 있는 거 1.5배) */
+            unsigned long vip_protection_goal = vip_dram_usage + (vip_cxl_usage * 3 / 2);
+            
+            /* non-VIP에게 허용되는 최대 DRAM 공간 (절대 기준선) */
+            unsigned long nonvip_allowed_dram;
+            
+            if (total_dram_pages > vip_protection_goal)
+                nonvip_allowed_dram = total_dram_pages - vip_protection_goal;
+            else
+                nonvip_allowed_dram = MIN_LIMIT >> PAGE_SHIFT;
+
+            /* 모든 non-VIP 자식들에게 동일한 절대 기준선을 적용 */
             for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
-                total_nonvip_dram += lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
-                                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
-            }
-
-            unsigned long target_reclaim = vip_cxl_usage * 3 / 2;
-            if (target_reclaim > total_nonvip_dram / 2)
-                target_reclaim = total_nonvip_dram / 2;
-
-            for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
-                unsigned long dram = lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
-                                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
-
-                if (total_nonvip_dram == 0 || dram == 0) continue;
-
-                unsigned long share = dram * target_reclaim / total_nonvip_dram;
-                unsigned long new_high = (dram > share) ? (dram - share) : (MIN_LIMIT >> PAGE_SHIFT);
-                page_counter_set_high_per_tier(&memcg->memory, new_high, 0);
+                /* 계층 구조의 최상위(nonvip_memcg)만 설정해도 하위로 전파됨 */
+                if (memcg == nonvip_memcg) {
+                    page_counter_set_high_per_tier(&memcg->memory, nonvip_allowed_dram, 0);
+                }
             }
 
         } else if (kswapd_active) {
-            /* * [PRE 모드]
-             * VIP가 없거나, VIP가 있어도 CXL 사용량이 적을 때(712MB 이하 등)
-             * 하지만 시스템 전반에 메모리 압박이 있어 kswapd가 돌고 있다면 진입
-             */
+            /* PRE 모드: kswapd 대응 (상대적 5% 감소는 유지하되, 현재 사용량 기준) */
             for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
-                unsigned long dram = lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
-                                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
-                unsigned long new_high = dram * 95 / 100;
-                page_counter_set_high_per_tier(&memcg->memory, new_high, 0);
+                if (memcg == nonvip_memcg) {
+                    unsigned long current_dram = lruvec_page_state(&memcg->nodeinfo[0]->lruvec, NR_ANON_MAPPED);
+                    page_counter_set_high_per_tier(&memcg->memory, current_dram * 95 / 100, 0);
+                }
             }
         } else {
-            /* [NOR 모드] 평온한 상태 */
-            for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                page_counter_set_high_per_tier(&memcg->memory, PAGE_COUNTER_MAX, 0);
-            }
+            /* NOR 모드: 평온한 상태 (제한 해제) */
+            page_counter_set_high_per_tier(&nonvip_memcg->memory, PAGE_COUNTER_MAX, 0);
         }
 
         msleep(200);
