@@ -5865,9 +5865,23 @@ static int cgroup_migrate_kthread_fn(void *data)
 
 #define MIN_LIMIT (512L * 1024 * 1024)
 
+static bool vip_has_tasks(void)
+{
+    struct css_task_iter it;
+    struct task_struct *p;
+    bool found = false;
+
+    css_task_iter_start(&vip_memcg->css, 0, &it);
+    p = css_task_iter_next(&it);
+    if (p)
+        found = true;
+    css_task_iter_end(&it);
+
+    return found;
+}
+
 static int reclaim_control_kthread_fn(void *data)
 {
-    /* 포인터 초기화될 때까지 재시도 */
     while (!vip_memcg || !nonvip_memcg) {
         if (init_vip_nonvip_memcg() == 0)
             break;
@@ -5878,69 +5892,91 @@ static int reclaim_control_kthread_fn(void *data)
         pg_data_t *pgdat = NODE_DATA(0);
         bool kswapd_active = pgdat->kswapd &&
                              pgdat->kswapd->__state == TASK_RUNNING;
+        struct mem_cgroup *memcg;
 
-        /* VIP CXL 사용량 확인 (실제 Node 1 사용량) */
-        struct mem_cgroup_per_node *vip_pn = vip_memcg->nodeinfo[1];
-        unsigned long vip_cxl_usage =
-            lruvec_page_state(&vip_pn->lruvec, NR_ANON_MAPPED) +
-            lruvec_page_state(&vip_pn->lruvec, NR_FILE_PAGES);
+        if (vip_has_tasks()) {
+            /* VIP 프로세스가 존재할 때만 CXL 사용량 체크 */
+            struct mem_cgroup_per_node *vip_pn = vip_memcg->nodeinfo[1];
+            unsigned long vip_cxl_usage =
+                lruvec_page_state(&vip_pn->lruvec, NR_ANON_MAPPED) +
+                lruvec_page_state(&vip_pn->lruvec, NR_FILE_PAGES);
 
-        if (vip_cxl_usage > VIP_CXL_THRESHOLD) {
-            /* [VIP 모드] */
-            unsigned long target_reclaim = vip_cxl_usage * 3 / 2;
-            unsigned long total_nonvip_dram = 0;
-            struct mem_cgroup *memcg;
+            if (vip_cxl_usage > VIP_CXL_THRESHOLD) {
+                /* [VIP 모드] */
+                unsigned long total_nonvip_dram = 0;
 
-            /* nonvip 전체 DRAM 사용량 합산 */
-            for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
-                total_nonvip_dram +=
-                    lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
-                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
-            }
+                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
+                    struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
+                    total_nonvip_dram +=
+                        lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
+                        lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
+                }
 
-            /* 각 nonvip memcg의 high_per_tier[0] 조정 */
-            for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
-                unsigned long dram =
-                    lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
-                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
+                /* target_reclaim이 total_nonvip_dram의 50% 초과 방지 */
+                unsigned long target_reclaim = vip_cxl_usage * 3 / 2;
+                if (target_reclaim > total_nonvip_dram / 2)
+                    target_reclaim = total_nonvip_dram / 2;
 
-                if (total_nonvip_dram == 0 || dram == 0)
-                    continue;
+                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
+                    struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
+                    unsigned long dram =
+                        lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
+                        lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
 
-                unsigned long share = dram * target_reclaim
-                                    / total_nonvip_dram;
-                unsigned long new_high = (dram > share)
-                                       ? (dram - share)
-                                       : (MIN_LIMIT >> PAGE_SHIFT);
+                    if (total_nonvip_dram == 0 || dram == 0)
+                        continue;
 
-                page_counter_set_high_per_tier(&memcg->memory,
-                                               new_high, 0);
-            }
+                    unsigned long share = dram * target_reclaim
+                                        / total_nonvip_dram;
+                    unsigned long new_high = (dram > share)
+                                           ? (dram - share)
+                                           : (MIN_LIMIT >> PAGE_SHIFT);
 
-        } else if (kswapd_active) {
-            /* [PRE 모드] 5% proactive demote */
-            struct mem_cgroup *memcg;
+                    page_counter_set_high_per_tier(&memcg->memory,
+                                                   new_high, 0);
+                }
 
-            for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
-                unsigned long dram =
-                    lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
-                    lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
-                unsigned long new_high = dram * 95 / 100;
+            } else if (kswapd_active) {
+                /* [PRE 모드] */
+                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
+                    struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
+                    unsigned long dram =
+                        lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
+                        lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
+                    unsigned long new_high = dram * 95 / 100;
 
-                page_counter_set_high_per_tier(&memcg->memory,
-                                               new_high, 0);
+                    page_counter_set_high_per_tier(&memcg->memory,
+                                                   new_high, 0);
+                }
+
+            } else {
+                /* [NOR 모드] */
+                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
+                    page_counter_set_high_per_tier(&memcg->memory,
+                                                   PAGE_COUNTER_MAX, 0);
+                }
             }
 
         } else {
-            /* [NOR 모드] high_per_tier[0] = max */
-            struct mem_cgroup *memcg;
+            /* VIP 프로세스 없음 → NOR 또는 PRE 모드 */
+            if (kswapd_active) {
+                /* [PRE 모드] */
+                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
+                    struct mem_cgroup_per_node *npn = memcg->nodeinfo[0];
+                    unsigned long dram =
+                        lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED) +
+                        lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
+                    unsigned long new_high = dram * 95 / 100;
 
-            for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
-                page_counter_set_high_per_tier(&memcg->memory,
-                                               PAGE_COUNTER_MAX, 0);
+                    page_counter_set_high_per_tier(&memcg->memory,
+                                                   new_high, 0);
+                }
+            } else {
+                /* [NOR 모드] */
+                for_each_mem_cgroup_tree(memcg, nonvip_memcg) {
+                    page_counter_set_high_per_tier(&memcg->memory,
+                                                   PAGE_COUNTER_MAX, 0);
+                }
             }
         }
 
