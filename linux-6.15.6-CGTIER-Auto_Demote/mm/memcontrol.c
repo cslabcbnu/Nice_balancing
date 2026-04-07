@@ -5863,6 +5863,8 @@ static int cgroup_migrate_kthread_fn(void *data)
     return 0;
 }
 
+#define MIN_LIMIT (512L * 1024 * 1024)
+
 /* * 이미 위쪽(5774, 5775라인)에 vip_memcg, nonvip_memcg가 정의되어 있으므로 
  * 여기서는 다시 선언하지 않습니다. 
  * 매크로(MIN_LIMIT, VIP_CXL_THRESHOLD)도 상단에 정의된 것을 사용하도록 합니다.
