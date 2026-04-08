@@ -5883,11 +5883,10 @@ static bool vip_has_tasks(void)
     return found;
 }
 
-// ── 기존 전역변수 아래에 추가 ──────────────────────────
 static unsigned long last_high_val = PAGE_COUNTER_MAX;
-static int stable_count = 0;          // 추가
-#define STABLE_THRESHOLD 15            // 15 * 200ms = 3초
-// ──────────────────────────────────────────────────────
+static int stable_count = 0;
+static bool prev_vip_mode = false;  // 추가
+#define STABLE_THRESHOLD 15
 
 static int reclaim_control_kthread_fn(void *data)
 {
@@ -5917,10 +5916,14 @@ static int reclaim_control_kthread_fn(void *data)
             vip_cxl_usage  = lruvec_page_state(&vip_pn1->lruvec, NR_ANON_MAPPED);
         }
 
-        if (vip_exists && vip_cxl_usage > VIP_CXL_THRESHOLD) {
-            /* [VIP 모드] */
-            stable_count = 0;  // 추가: VIP 모드 재진입 시 카운터 리셋
+        // [수정] VIP 모드에서 벗어나는 순간 stable_count 리셋
+        bool cur_vip_mode = (vip_exists && vip_cxl_usage > VIP_CXL_THRESHOLD);
+        if (prev_vip_mode && !cur_vip_mode)
+            stable_count = 0;
+        prev_vip_mode = cur_vip_mode;
 
+        if (cur_vip_mode) {
+            /* [VIP 모드] */
             unsigned long vip_protection_goal = vip_dram_usage + (vip_cxl_usage * 3 / 2);
             unsigned long new_high;
 
@@ -5936,11 +5939,11 @@ static int reclaim_control_kthread_fn(void *data)
             if (diff > (total_dram_pages / 100)) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory, new_high, 0);
                 last_high_val = new_high;
-                pr_info("NICEBAL: VIP Mode - High updated to %lu\n", new_high); // 주석 해제
+                pr_info("NICEBAL: VIP Mode - High updated to %lu\n", new_high);
             }
 
         } else if (kswapd_active && stable_count < STABLE_THRESHOLD) {
-            /* [PRE 모드] 최대 STABLE_THRESHOLD 횟수만 개입 */
+            /* [PRE 모드] */
             stable_count++;
 
             struct mem_cgroup_per_node *npn = nonvip_memcg->nodeinfo[0];
@@ -5950,7 +5953,7 @@ static int reclaim_control_kthread_fn(void *data)
             if (last_high_val != pre_high) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory, pre_high, 0);
                 last_high_val = pre_high;
-                pr_info("NICEBAL: PRE Mode - count=%d high=%lu\n", stable_count, pre_high); // 추가
+                pr_info("NICEBAL: PRE Mode - count=%d high=%lu\n", stable_count, pre_high);
             }
 
         } else {
@@ -5958,7 +5961,7 @@ static int reclaim_control_kthread_fn(void *data)
             if (last_high_val != PAGE_COUNTER_MAX) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory, PAGE_COUNTER_MAX, 0);
                 last_high_val = PAGE_COUNTER_MAX;
-                stable_count  = 0;  // 추가
+                stable_count = 0;
                 pr_info("NICEBAL: Normal Mode - Limits cleared\n");
             }
         }
