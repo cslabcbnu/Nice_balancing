@@ -5890,12 +5890,16 @@ static bool vip_has_tasks(void)
     return found;
 }
 
+// ── 기존 전역변수 아래에 추가 ──────────────────────────
+static unsigned long last_high_val = PAGE_COUNTER_MAX;
+static int stable_count = 0;          // 추가
+#define STABLE_THRESHOLD 15            // 15 * 200ms = 3초
+// ──────────────────────────────────────────────────────
+
 static int reclaim_control_kthread_fn(void *data)
 {
-    /* Node 0의 전체 물리 페이지 수 계산 */
     unsigned long total_dram_pages = NODE_DATA(0)->node_present_pages;
 
-    /* memcg 초기화 대기 */
     while (!vip_memcg || !nonvip_memcg) {
         if (init_vip_nonvip_memcg() == 0)
             break;
@@ -5906,9 +5910,9 @@ static int reclaim_control_kthread_fn(void *data)
 
     while (!kthread_should_stop()) {
         pg_data_t *pgdat = NODE_DATA(0);
-        bool kswapd_active = pgdat->kswapd && 
+        bool kswapd_active = pgdat->kswapd &&
                              pgdat->kswapd->__state == TASK_RUNNING;
-        
+
         bool vip_exists = vip_has_tasks();
         unsigned long vip_cxl_usage = 0;
         unsigned long vip_dram_usage = 0;
@@ -5916,17 +5920,14 @@ static int reclaim_control_kthread_fn(void *data)
         if (vip_exists) {
             struct mem_cgroup_per_node *vip_pn0 = vip_memcg->nodeinfo[0];
             struct mem_cgroup_per_node *vip_pn1 = vip_memcg->nodeinfo[1];
-            
-            /* VIP의 현재 DRAM 및 CXL 사용량 스냅샷 */
             vip_dram_usage = lruvec_page_state(&vip_pn0->lruvec, NR_ANON_MAPPED);
-            vip_cxl_usage = lruvec_page_state(&vip_pn1->lruvec, NR_ANON_MAPPED);
+            vip_cxl_usage  = lruvec_page_state(&vip_pn1->lruvec, NR_ANON_MAPPED);
         }
 
-        /* * VIP_CXL_THRESHOLD와 MIN_LIMIT는 
-         * 상단(5785, 5866라인)에 정의된 값을 그대로 사용합니다.
-         */
         if (vip_exists && vip_cxl_usage > VIP_CXL_THRESHOLD) {
-            /* [VIP 모드] 절대 기준선 방식 */
+            /* [VIP 모드] */
+            stable_count = 0;  // 추가: VIP 모드 재진입 시 카운터 리셋
+
             unsigned long vip_protection_goal = vip_dram_usage + (vip_cxl_usage * 3 / 2);
             unsigned long new_high;
 
@@ -5935,19 +5936,20 @@ static int reclaim_control_kthread_fn(void *data)
             else
                 new_high = MIN_LIMIT >> PAGE_SHIFT;
 
-            /* Deadband 로직: 1% 이상 차이날 때만 업데이트 */
-            unsigned long diff = (new_high > last_high_val) ? 
-                                 (new_high - last_high_val) : 
+            unsigned long diff = (new_high > last_high_val) ?
+                                 (new_high - last_high_val) :
                                  (last_high_val - new_high);
 
             if (diff > (total_dram_pages / 100)) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory, new_high, 0);
                 last_high_val = new_high;
-                // pr_info("NICEBAL: VIP Mode - High updated\n");
+                pr_info("NICEBAL: VIP Mode - High updated to %lu\n", new_high); // 주석 해제
             }
 
-        } else if (kswapd_active) {
-            /* [PRE 모드] */
+        } else if (kswapd_active && stable_count < STABLE_THRESHOLD) {
+            /* [PRE 모드] 최대 STABLE_THRESHOLD 횟수만 개입 */
+            stable_count++;
+
             struct mem_cgroup_per_node *npn = nonvip_memcg->nodeinfo[0];
             unsigned long current_dram = lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED);
             unsigned long pre_high = current_dram * 95 / 100;
@@ -5955,13 +5957,15 @@ static int reclaim_control_kthread_fn(void *data)
             if (last_high_val != pre_high) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory, pre_high, 0);
                 last_high_val = pre_high;
+                pr_info("NICEBAL: PRE Mode - count=%d high=%lu\n", stable_count, pre_high); // 추가
             }
 
         } else {
-            /* [NOR 모드] 평온한 상태 */
+            /* [NOR 모드] */
             if (last_high_val != PAGE_COUNTER_MAX) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory, PAGE_COUNTER_MAX, 0);
                 last_high_val = PAGE_COUNTER_MAX;
+                stable_count  = 0;  // 추가
                 pr_info("NICEBAL: Normal Mode - Limits cleared\n");
             }
         }
