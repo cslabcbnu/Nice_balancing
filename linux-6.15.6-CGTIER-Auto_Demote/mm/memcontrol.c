@@ -5910,15 +5910,11 @@ static int reclaim_control_kthread_fn(void *data)
         unsigned long vip_dram_usage = 0;
 
         if (vip_exists) {
-    		struct mem_cgroup_per_node *vip_pn0 = vip_memcg->nodeinfo[0];
-    		struct mem_cgroup_per_node *vip_pn1 = vip_memcg->nodeinfo[1];
-    
-    /* anon + file 모두 포함 */
-    		vip_dram_usage = lruvec_page_state(&vip_pn0->lruvec, NR_ANON_MAPPED)
-                   		+ lruvec_page_state(&vip_pn0->lruvec, NR_FILE_PAGES);
-    		vip_cxl_usage  = lruvec_page_state(&vip_pn1->lruvec, NR_ANON_MAPPED)
-                   		+ lruvec_page_state(&vip_pn1->lruvec, NR_FILE_PAGES);
-		}
+            struct mem_cgroup_per_node *vip_pn0 = vip_memcg->nodeinfo[0];
+            struct mem_cgroup_per_node *vip_pn1 = vip_memcg->nodeinfo[1];
+            vip_dram_usage = lruvec_page_state(&vip_pn0->lruvec, NR_ANON_MAPPED);
+            vip_cxl_usage  = lruvec_page_state(&vip_pn1->lruvec, NR_ANON_MAPPED);
+        }
 
         // [수정] VIP 모드에서 벗어나는 순간 stable_count 리셋
         bool cur_vip_mode = (vip_exists && vip_cxl_usage > VIP_CXL_THRESHOLD);
