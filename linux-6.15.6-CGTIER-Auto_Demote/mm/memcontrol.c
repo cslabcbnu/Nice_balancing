@@ -5909,14 +5909,23 @@ static int reclaim_control_kthread_fn(void *data)
         unsigned long vip_cxl_usage = 0;
         unsigned long vip_dram_usage = 0;
 
+        /* nonvip DRAM 사용량 측정 */
+        struct mem_cgroup_per_node *npn = nonvip_memcg->nodeinfo[0];
+        unsigned long nonvip_dram = lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED)
+                                  + lruvec_page_state(&npn->lruvec, NR_FILE_PAGES);
+
+        /* DRAM 압박 여부: nonvip가 DRAM 70% 이상 사용 시 */
+        bool dram_pressure = (nonvip_dram > total_dram_pages * 70 / 100);
+
         if (vip_exists) {
             struct mem_cgroup_per_node *vip_pn0 = vip_memcg->nodeinfo[0];
             struct mem_cgroup_per_node *vip_pn1 = vip_memcg->nodeinfo[1];
-            vip_dram_usage = lruvec_page_state(&vip_pn0->lruvec, NR_ANON_MAPPED);
-            vip_cxl_usage  = lruvec_page_state(&vip_pn1->lruvec, NR_ANON_MAPPED);
+            vip_dram_usage = lruvec_page_state(&vip_pn0->lruvec, NR_ANON_MAPPED)
+                           + lruvec_page_state(&vip_pn0->lruvec, NR_FILE_PAGES);
+            vip_cxl_usage  = lruvec_page_state(&vip_pn1->lruvec, NR_ANON_MAPPED)
+                           + lruvec_page_state(&vip_pn1->lruvec, NR_FILE_PAGES);
         }
 
-        // [수정] VIP 모드에서 벗어나는 순간 stable_count 리셋
         bool cur_vip_mode = (vip_exists && vip_cxl_usage > VIP_CXL_THRESHOLD);
         if (prev_vip_mode && !cur_vip_mode)
             stable_count = 0;
@@ -5942,29 +5951,36 @@ static int reclaim_control_kthread_fn(void *data)
                 pr_info("NICEBAL: VIP Mode - High updated to %lu\n", new_high);
             }
 
-        } else if (kswapd_active && stable_count < STABLE_THRESHOLD) {
-            /* [PRE 모드] */
+        } else if (kswapd_active && dram_pressure &&
+                   stable_count < STABLE_THRESHOLD) {
+            /* [PRE 모드]
+             * kswapd 활성 AND DRAM 압박 있을 때만 진입
+             * DRAM이 충분히 비어있으면 굳이 밀어낼 필요 없음 */
             stable_count++;
 
-            struct mem_cgroup_per_node *npn = nonvip_memcg->nodeinfo[0];
-            unsigned long current_dram = lruvec_page_state(&npn->lruvec, NR_ANON_MAPPED);
-            unsigned long pre_high = current_dram * 95 / 100;
+            unsigned long pre_high = nonvip_dram * 95 / 100;
 
             if (last_high_val != pre_high) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory, pre_high, 0);
                 last_high_val = pre_high;
-                pr_info("NICEBAL: PRE Mode - count=%d high=%lu\n", stable_count, pre_high);
+                pr_info("NICEBAL: PRE Mode - count=%d high=%lu\n",
+                        stable_count, pre_high);
             }
 
-        } else {
-            /* [NOR 모드] */
+        } else if (!vip_exists && !dram_pressure) {
+            /* [NOR 모드]
+             * VIP 없고 DRAM 압박도 없을 때만 복원
+             * PRE에서 낮춘 high는 DRAM 압박 해소될 때까지 유지 */
             if (last_high_val != PAGE_COUNTER_MAX) {
-                page_counter_set_high_per_tier(&nonvip_memcg->memory, PAGE_COUNTER_MAX, 0);
+                page_counter_set_high_per_tier(&nonvip_memcg->memory,
+                                               PAGE_COUNTER_MAX, 0);
                 last_high_val = PAGE_COUNTER_MAX;
                 stable_count = 0;
                 pr_info("NICEBAL: Normal Mode - Limits cleared\n");
             }
+
         }
+        /* 그 외 경우: 현재 high 값 유지 (oscillation 방지) */
 
         msleep(200);
     }
