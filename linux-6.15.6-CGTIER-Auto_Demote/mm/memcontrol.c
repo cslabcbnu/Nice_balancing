@@ -5958,7 +5958,7 @@ static int reclaim_control_kthread_fn(void *data)
              * DRAM이 충분히 비어있으면 굳이 밀어낼 필요 없음 */
             stable_count++;
 
-            unsigned long pre_high = nonvip_dram * 95 / 100;
+            unsigned long pre_high = total_dram_pages * 80 / 100;
 
             if (last_high_val != pre_high) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory, pre_high, 0);
