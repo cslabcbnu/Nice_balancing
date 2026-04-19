@@ -1761,9 +1761,6 @@ struct memcg_stock_pcp {
 	local_trylock_t stock_lock;
 	struct mem_cgroup *cached; /* this never be root cgroup */
 	unsigned int nr_pages;
-#ifdef CONFIG_CGTIER
-	unsigned int nr_pages_per_tier[4];
-#endif
 
 	struct obj_cgroup *cached_objcg;
 	struct pglist_data *cached_pgdat;
@@ -1836,22 +1833,11 @@ static void drain_stock(struct memcg_stock_pcp *stock)
 		return;
 
 	if (stock_pages) {
+		page_counter_uncharge(&old->memory,
 #ifdef CONFIG_CGTIER
-		unsigned int tier_sum = 0;
-		for (int i = 0; i < 4; i++) {
-			if (stock->nr_pages_per_tier[i]) {
-				page_counter_uncharge(&old->memory, i,
-						stock->nr_pages_per_tier[i]);
-				tier_sum += stock->nr_pages_per_tier[i];
-				stock->nr_pages_per_tier[i] = 0;
-			}
-		}
-		if (stock_pages > tier_sum)
-			page_counter_uncharge(&old->memory, -1,
-					stock_pages - tier_sum);
-#else
-		page_counter_uncharge(&old->memory, stock_pages);
+					-1,
 #endif
+				stock_pages);
 		if (do_memsw_account())
 			page_counter_uncharge(&old->memsw,
 #ifdef CONFIG_CGTIER
@@ -1892,11 +1878,7 @@ static void drain_local_stock(struct work_struct *dummy)
  * Cache charges(val) to local per_cpu area.
  * This will be consumed by consume_stock() function, later.
  */
-static void __refill_stock(struct mem_cgroup *memcg,
-#ifdef CONFIG_CGTIER
-			   long tier,
-#endif
-			   unsigned int nr_pages)
+static void __refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 {
 	struct memcg_stock_pcp *stock;
 	unsigned int stock_pages;
@@ -1907,10 +1889,6 @@ static void __refill_stock(struct mem_cgroup *memcg,
 		css_get(&memcg->css);
 		WRITE_ONCE(stock->cached, memcg);
 	}
-#ifdef CONFIG_CGTIER
-	if (tier + 1)
-		stock->nr_pages_per_tier[tier] += nr_pages;
-#endif
 	stock_pages = READ_ONCE(stock->nr_pages) + nr_pages;
 	WRITE_ONCE(stock->nr_pages, stock_pages);
 
@@ -1919,19 +1897,20 @@ static void __refill_stock(struct mem_cgroup *memcg,
 }
 
 static void refill_stock(struct mem_cgroup *memcg,
-#ifdef CONFIG_CGTIER
-			 long tier,
-#endif
-			 unsigned int nr_pages)
+			unsigned int nr_pages)
 {
 	unsigned long flags;
 
 	if (!local_trylock_irqsave(&memcg_stock.stock_lock, flags)) {
+		/*
+		 * In case of unlikely failure to lock percpu stock_lock
+		 * uncharge memcg directly.
+		 */
 		if (mem_cgroup_is_root(memcg))
 			return;
 		page_counter_uncharge(&memcg->memory,
 #ifdef CONFIG_CGTIER
-				tier,
+				-1,
 #endif
 				nr_pages);
 		if (do_memsw_account())
@@ -1942,11 +1921,7 @@ static void refill_stock(struct mem_cgroup *memcg,
 					nr_pages);
 		return;
 	}
-	__refill_stock(memcg,
-#ifdef CONFIG_CGTIER
-		       tier,
-#endif
-		       nr_pages);
+	__refill_stock(memcg, nr_pages);
 	local_unlock_irqrestore(&memcg_stock.stock_lock, flags);
 }
 
@@ -2031,18 +2006,13 @@ static unsigned long reclaim_high(struct mem_cgroup *memcg,
 					READ_ONCE(memcg->memory.high_per_tier[tier])))
 			continue;
 		if (!(tier + 1)) {
-			bool all_ok = true;
 			for (long i = 0; i < 4; i++) {
 				if (page_counter_read_per_tier(&memcg->memory, i) >
                                         READ_ONCE(memcg->memory.high_per_tier[i])) {
-					all_ok = false;
 					tier = i;
 					goto reclaim_path;
 				}
 			}
-			/* 모든 tier가 high 이하면 memory.high 체크로 넘어가지 않고 멈춤 */
-			if (all_ok)
-				continue;
 		}
 		if (!(tier+1) && (page_counter_read(&memcg->memory) <=
 		    READ_ONCE(memcg->memory.high)))
@@ -2509,11 +2479,7 @@ force:
 
 done_restock:
 	if (batch > nr_pages)
-		refill_stock(memcg,
-#ifdef CONFIG_CGTIER
-			     tier,
-#endif
-			     batch - nr_pages);
+		refill_stock(memcg, batch - nr_pages);
 
 	/*
 	 * If the hierarchy is above the normal consumption range, schedule
@@ -2836,11 +2802,7 @@ static void obj_cgroup_uncharge_pages(struct obj_cgroup *objcg,
 	mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
 	memcg1_account_kmem(memcg, -nr_pages);
 	if (!mem_cgroup_is_root(memcg))
-		refill_stock(memcg,
-#ifdef CONFIG_CGTIER
-			     -1,
-#endif
-			     nr_pages);
+		refill_stock(memcg, nr_pages);
 
 	css_put(&memcg->css);
 }
@@ -3049,11 +3011,7 @@ static struct obj_cgroup *drain_obj_stock(struct memcg_stock_pcp *stock)
 
 			mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
 			memcg1_account_kmem(memcg, -nr_pages);
-			__refill_stock(memcg,
-#ifdef CONFIG_CGTIER
-               -1,
-#endif
-               nr_pages);
+			__refill_stock(memcg, nr_pages);
 
 			css_put(&memcg->css);
 		}
@@ -5268,12 +5226,7 @@ void mem_cgroup_uncharge_skmem(struct mem_cgroup *memcg, unsigned int nr_pages)
 
 	mod_memcg_state(memcg, MEMCG_SOCK, -nr_pages);
 
-	mod_memcg_state(memcg, MEMCG_SOCK, -nr_pages);
-	refill_stock(memcg,
-#ifdef CONFIG_CGTIER
-             -1,
-#endif
-             nr_pages);
+	refill_stock(memcg, nr_pages);
 }
 
 #ifdef CONFIG_CGTIER
@@ -5980,7 +5933,8 @@ static int reclaim_control_kthread_fn(void *data)
         if (cur_vip_mode) {
             /* [VIP 모드]
              * PRE에서 확보한 기준값(pre_high_val)에서
-             * vip_cxl_usage * 1.5 만큼 추가로 줄임 */
+             * vip_cxl_usage * 1.5 만큼 추가로 줄임
+             * 누적 없이 매 사이클 독립적으로 계산 */
             unsigned long additional = vip_cxl_usage * 3 / 2;
             unsigned long new_high = (pre_high_val > additional)
                                    ? (pre_high_val - additional)
@@ -5993,31 +5947,20 @@ static int reclaim_control_kthread_fn(void *data)
                 pr_info("NICEBAL: VIP Mode - High updated to %lu\n", new_high);
             }
 
-        } else if (!vip_exists && dram_pressure) {
+        } else if (dram_pressure &&
+                   stable_count < STABLE_THRESHOLD) {
             /* [PRE 모드]
-             * nonvip_dram 비율에 따라 점진적으로 high 낮춤
-             * nonvip_dram 70%~100% 범위에서 high를 95%~80%로 선형 보간
-             * 최종 목표: DRAM의 20% 여유 확보 */
-            unsigned long dram_ratio = nonvip_dram * 100 / total_dram_pages;
-
-            /* 70% 미만이면 95%, 100% 이상이면 80% */
-            unsigned long high_ratio;
-            if (dram_ratio <= 70)
-                high_ratio = 95;
-            else if (dram_ratio >= 100)
-                high_ratio = 80;
-            else
-                /* 70~100% 사이 선형 보간: 95% → 80% */
-                high_ratio = 95 - ((dram_ratio - 70) * 15 / 30);
-
-            pre_high_val = total_dram_pages * high_ratio / 100;
+             * DRAM 20% 여유 확보
+             * 기준값(pre_high_val) 저장 */
+            stable_count++;
+            pre_high_val = total_dram_pages * 80 / 100;
 
             if (last_high_val != pre_high_val) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory,
                                                pre_high_val, 0);
                 last_high_val = pre_high_val;
-                pr_info("NICEBAL: PRE Mode - dram_ratio=%lu high_ratio=%lu high=%lu\n",
-                        dram_ratio, high_ratio, pre_high_val);
+                pr_info("NICEBAL: PRE Mode - count=%d high=%lu\n",
+                        stable_count, pre_high_val);
             }
 
         } else if (!vip_exists && !dram_pressure) {
@@ -6033,7 +5976,7 @@ static int reclaim_control_kthread_fn(void *data)
                 pr_info("NICEBAL: Normal Mode - Limits cleared\n");
             }
         }
-        /* VIP 존재하지만 CXL 임계값 미만: 현재 high 유지 */
+        /* 그 외: 현재 high 값 유지 (oscillation 방지) */
 
         msleep(200);
     }
