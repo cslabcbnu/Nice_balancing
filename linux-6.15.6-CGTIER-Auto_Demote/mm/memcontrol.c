@@ -5888,6 +5888,8 @@ static int stable_count = 0;
 static bool prev_vip_mode = false;  // 추가
 #define STABLE_THRESHOLD 15
 
+static unsigned long pre_high_val = PAGE_COUNTER_MAX;
+
 static int reclaim_control_kthread_fn(void *data)
 {
     unsigned long total_dram_pages = NODE_DATA(0)->node_present_pages;
@@ -5932,21 +5934,18 @@ static int reclaim_control_kthread_fn(void *data)
         prev_vip_mode = cur_vip_mode;
 
         if (cur_vip_mode) {
-            /* [VIP 모드] */
-            unsigned long vip_protection_goal = vip_dram_usage + (vip_cxl_usage * 3 / 2);
-            unsigned long new_high;
+            /* [VIP 모드]
+             * PRE에서 확보한 기준값(pre_high_val)에서
+             * vip_cxl_usage * 1.5 만큼 추가로 줄임
+             * 누적 없이 매 사이클 독립적으로 계산 */
+            unsigned long additional = vip_cxl_usage * 3 / 2;
+            unsigned long new_high = (pre_high_val > additional)
+                                   ? (pre_high_val - additional)
+                                   : (MIN_LIMIT >> PAGE_SHIFT);
 
-            if (total_dram_pages > vip_protection_goal)
-                new_high = total_dram_pages - vip_protection_goal;
-            else
-                new_high = MIN_LIMIT >> PAGE_SHIFT;
-
-            unsigned long diff = (new_high > last_high_val) ?
-                                 (new_high - last_high_val) :
-                                 (last_high_val - new_high);
-
-            if (diff > (total_dram_pages / 100)) {
-                page_counter_set_high_per_tier(&nonvip_memcg->memory, new_high, 0);
+            if (new_high != last_high_val) {
+                page_counter_set_high_per_tier(&nonvip_memcg->memory,
+                                               new_high, 0);
                 last_high_val = new_high;
                 pr_info("NICEBAL: VIP Mode - High updated to %lu\n", new_high);
             }
@@ -5954,33 +5953,33 @@ static int reclaim_control_kthread_fn(void *data)
         } else if (kswapd_active && dram_pressure &&
                    stable_count < STABLE_THRESHOLD) {
             /* [PRE 모드]
-             * kswapd 활성 AND DRAM 압박 있을 때만 진입
-             * DRAM이 충분히 비어있으면 굳이 밀어낼 필요 없음 */
+             * DRAM 20% 여유 확보
+             * 기준값(pre_high_val) 저장 */
             stable_count++;
+            pre_high_val = total_dram_pages * 80 / 100;
 
-            unsigned long pre_high = total_dram_pages * 80 / 100;
-
-            if (last_high_val != pre_high) {
-                page_counter_set_high_per_tier(&nonvip_memcg->memory, pre_high, 0);
-                last_high_val = pre_high;
+            if (last_high_val != pre_high_val) {
+                page_counter_set_high_per_tier(&nonvip_memcg->memory,
+                                               pre_high_val, 0);
+                last_high_val = pre_high_val;
                 pr_info("NICEBAL: PRE Mode - count=%d high=%lu\n",
-                        stable_count, pre_high);
+                        stable_count, pre_high_val);
             }
 
         } else if (!vip_exists && !dram_pressure) {
             /* [NOR 모드]
-             * VIP 없고 DRAM 압박도 없을 때만 복원
-             * PRE에서 낮춘 high는 DRAM 압박 해소될 때까지 유지 */
+             * VIP 없고 DRAM 압박 없을 때 max 복원
+             * pre_high_val도 초기화 */
             if (last_high_val != PAGE_COUNTER_MAX) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory,
                                                PAGE_COUNTER_MAX, 0);
                 last_high_val = PAGE_COUNTER_MAX;
-                stable_count = 0;
+                pre_high_val  = PAGE_COUNTER_MAX;
+                stable_count  = 0;
                 pr_info("NICEBAL: Normal Mode - Limits cleared\n");
             }
-
         }
-        /* 그 외 경우: 현재 high 값 유지 (oscillation 방지) */
+        /* 그 외: 현재 high 값 유지 (oscillation 방지) */
 
         msleep(200);
     }
