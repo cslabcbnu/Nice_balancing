@@ -5938,8 +5938,7 @@ static int reclaim_control_kthread_fn(void *data)
         if (cur_vip_mode) {
             /* [VIP 모드]
              * PRE에서 확보한 기준값(pre_high_val)에서
-             * vip_cxl_usage * 1.5 만큼 추가로 줄임
-             * 누적 없이 매 사이클 독립적으로 계산 */
+             * vip_cxl_usage * 1.5 만큼 추가로 줄임 */
             unsigned long additional = vip_cxl_usage * 3 / 2;
             unsigned long new_high = (pre_high_val > additional)
                                    ? (pre_high_val - additional)
@@ -5952,20 +5951,31 @@ static int reclaim_control_kthread_fn(void *data)
                 pr_info("NICEBAL: VIP Mode - High updated to %lu\n", new_high);
             }
 
-        } else if (dram_pressure &&
-                   stable_count < STABLE_THRESHOLD) {
+        } else if (!vip_exists && dram_pressure) {
             /* [PRE 모드]
-             * DRAM 20% 여유 확보
-             * 기준값(pre_high_val) 저장 */
-            stable_count++;
-            pre_high_val = total_dram_pages * 80 / 100;
+             * nonvip_dram 비율에 따라 점진적으로 high 낮춤
+             * nonvip_dram 70%~100% 범위에서 high를 95%~80%로 선형 보간
+             * 최종 목표: DRAM의 20% 여유 확보 */
+            unsigned long dram_ratio = nonvip_dram * 100 / total_dram_pages;
+
+            /* 70% 미만이면 95%, 100% 이상이면 80% */
+            unsigned long high_ratio;
+            if (dram_ratio <= 70)
+                high_ratio = 95;
+            else if (dram_ratio >= 100)
+                high_ratio = 80;
+            else
+                /* 70~100% 사이 선형 보간: 95% → 80% */
+                high_ratio = 95 - ((dram_ratio - 70) * 15 / 30);
+
+            pre_high_val = total_dram_pages * high_ratio / 100;
 
             if (last_high_val != pre_high_val) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory,
                                                pre_high_val, 0);
                 last_high_val = pre_high_val;
-                pr_info("NICEBAL: PRE Mode - count=%d high=%lu\n",
-                        stable_count, pre_high_val);
+                pr_info("NICEBAL: PRE Mode - dram_ratio=%lu high_ratio=%lu high=%lu\n",
+                        dram_ratio, high_ratio, pre_high_val);
             }
 
         } else if (!vip_exists && !dram_pressure) {
@@ -5981,7 +5991,7 @@ static int reclaim_control_kthread_fn(void *data)
                 pr_info("NICEBAL: Normal Mode - Limits cleared\n");
             }
         }
-        /* 그 외: 현재 high 값 유지 (oscillation 방지) */
+        /* VIP 존재하지만 CXL 임계값 미만: 현재 high 유지 */
 
         msleep(200);
     }
