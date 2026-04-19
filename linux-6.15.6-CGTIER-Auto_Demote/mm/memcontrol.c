@@ -5904,8 +5904,6 @@ static int reclaim_control_kthread_fn(void *data)
 
     while (!kthread_should_stop()) {
         pg_data_t *pgdat = NODE_DATA(0);
-        bool kswapd_active = pgdat->kswapd &&
-                             pgdat->kswapd->__state == TASK_RUNNING;
 
         bool vip_exists = vip_has_tasks();
         unsigned long vip_cxl_usage = 0;
@@ -5950,7 +5948,7 @@ static int reclaim_control_kthread_fn(void *data)
                 pr_info("NICEBAL: VIP Mode - High updated to %lu\n", new_high);
             }
 
-        } else if (kswapd_active && dram_pressure &&
+        } else if (dram_pressure &&
                    stable_count < STABLE_THRESHOLD) {
             /* [PRE 모드]
              * DRAM 20% 여유 확보
