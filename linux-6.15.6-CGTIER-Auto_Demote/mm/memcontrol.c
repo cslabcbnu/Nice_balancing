@@ -5903,7 +5903,6 @@ static int reclaim_control_kthread_fn(void *data)
     pr_info("NICEBAL: Controller Started. DRAM Total: %lu pages\n", total_dram_pages);
 
     while (!kthread_should_stop()) {
-        pg_data_t *pgdat = NODE_DATA(0);
 
         bool vip_exists = vip_has_tasks();
         unsigned long vip_cxl_usage = 0;
