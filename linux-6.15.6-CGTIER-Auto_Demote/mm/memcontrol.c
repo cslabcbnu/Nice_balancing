@@ -5965,17 +5965,16 @@ static int reclaim_control_kthread_fn(void *data)
             }
 
         } else if (vip_exists && !cur_vip_mode) {
-            /* [VIP 존재 + CXL 임계값 미만]
-             * VIP가 DRAM에 올라오는 중 → pre_high_val 유지 */
-            if (pre_high_val == PAGE_COUNTER_MAX)
-                pre_high_val = total_dram_pages * 80 / 100;
-
-            if (last_high_val != pre_high_val) {
+            /* [VIP Settled]
+             * VIP CXL 사용 없음 → DRAM에 안착
+             * nonvip 제한 해제 */
+            if (last_high_val != PAGE_COUNTER_MAX) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory,
-                                               pre_high_val, 0);
-                last_high_val = pre_high_val;
-                pr_info("NICEBAL: VIP Settling - High maintained at %lu\n",
-                        pre_high_val);
+                                               PAGE_COUNTER_MAX, 0);
+                last_high_val = PAGE_COUNTER_MAX;
+                pre_high_val  = PAGE_COUNTER_MAX;
+                stable_count  = 0;
+                pr_info("NICEBAL: VIP Settled - Limits cleared\n");
             }
 
         } else if (!vip_exists && kswapd_active && dram_pressure &&
