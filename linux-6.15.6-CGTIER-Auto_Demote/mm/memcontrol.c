@@ -5948,7 +5948,10 @@ static int reclaim_control_kthread_fn(void *data)
 
         if (cur_vip_mode) {
             /* [VIP 모드]
-             * PRE 기준값(pre_high_val)에서 vip_cxl * 1.5 추가로 줄임 */
+             * PRE 없이 VIP가 바로 등장한 경우 기준값 설정 */
+            if (pre_high_val == PAGE_COUNTER_MAX)
+                pre_high_val = total_dram_pages * 80 / 100;
+
             unsigned long additional = vip_cxl_usage * 3 / 2;
             unsigned long new_high = (pre_high_val > additional)
                                    ? (pre_high_val - additional)
@@ -5962,10 +5965,12 @@ static int reclaim_control_kthread_fn(void *data)
             }
 
         } else if (vip_exists && !cur_vip_mode) {
-            /* [VIP 존재하지만 CXL 임계값 미만]
-             * PRE 기준값 유지 (VIP가 DRAM에 올라오는 중) */
-            if (last_high_val != pre_high_val &&
-                pre_high_val != PAGE_COUNTER_MAX) {
+            /* [VIP 존재 + CXL 임계값 미만]
+             * VIP가 DRAM에 올라오는 중 → pre_high_val 유지 */
+            if (pre_high_val == PAGE_COUNTER_MAX)
+                pre_high_val = total_dram_pages * 80 / 100;
+
+            if (last_high_val != pre_high_val) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory,
                                                pre_high_val, 0);
                 last_high_val = pre_high_val;
@@ -5976,8 +5981,7 @@ static int reclaim_control_kthread_fn(void *data)
         } else if (!vip_exists && kswapd_active && dram_pressure &&
                    stable_count < STABLE_THRESHOLD) {
             /* [PRE 모드]
-             * kswapd 활성 + DRAM 압박 시 20% 여유 확보
-             * 기준값(pre_high_val) 저장 */
+             * kswapd 활성 + DRAM 압박 시 20% 여유 확보 */
             stable_count++;
             pre_high_val = total_dram_pages * 80 / 100;
 
@@ -5989,9 +5993,9 @@ static int reclaim_control_kthread_fn(void *data)
                         stable_count, pre_high_val);
             }
 
-        } else if (!vip_exists) {
+        } else if (!vip_exists && !dram_pressure) {
             /* [NOR 모드]
-             * VIP 없으면 dram_pressure 무관하게 무조건 max 복원 */
+             * VIP 없고 DRAM 압박 없을 때만 max 복원 */
             if (last_high_val != PAGE_COUNTER_MAX) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory,
                                                PAGE_COUNTER_MAX, 0);
@@ -6001,6 +6005,7 @@ static int reclaim_control_kthread_fn(void *data)
                 pr_info("NICEBAL: Normal Mode - Limits cleared\n");
             }
         }
+        /* 그 외: 현재 high 값 유지 */
 
         msleep(200);
     }
