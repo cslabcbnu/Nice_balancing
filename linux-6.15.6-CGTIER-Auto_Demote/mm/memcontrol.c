@@ -1761,6 +1761,9 @@ struct memcg_stock_pcp {
 	local_trylock_t stock_lock;
 	struct mem_cgroup *cached; /* this never be root cgroup */
 	unsigned int nr_pages;
+#ifdef CONFIG_CGTIER
+	unsigned int nr_pages_per_tier[4];
+#endif
 
 	struct obj_cgroup *cached_objcg;
 	struct pglist_data *cached_pgdat;
@@ -1833,11 +1836,22 @@ static void drain_stock(struct memcg_stock_pcp *stock)
 		return;
 
 	if (stock_pages) {
-		page_counter_uncharge(&old->memory,
 #ifdef CONFIG_CGTIER
-					-1,
+		unsigned int tier_sum = 0;
+		for (int i = 0; i < 4; i++) {
+			if (stock->nr_pages_per_tier[i]) {
+				page_counter_uncharge(&old->memory, i,
+						stock->nr_pages_per_tier[i]);
+				tier_sum += stock->nr_pages_per_tier[i];
+				stock->nr_pages_per_tier[i] = 0;
+			}
+		}
+		if (stock_pages > tier_sum)
+			page_counter_uncharge(&old->memory, -1,
+					stock_pages - tier_sum);
+#else
+		page_counter_uncharge(&old->memory, stock_pages);
 #endif
-				stock_pages);
 		if (do_memsw_account())
 			page_counter_uncharge(&old->memsw,
 #ifdef CONFIG_CGTIER
@@ -1878,7 +1892,11 @@ static void drain_local_stock(struct work_struct *dummy)
  * Cache charges(val) to local per_cpu area.
  * This will be consumed by consume_stock() function, later.
  */
-static void __refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
+static void __refill_stock(struct mem_cgroup *memcg,
+#ifdef CONFIG_CGTIER
+			   long tier,
+#endif
+			   unsigned int nr_pages)
 {
 	struct memcg_stock_pcp *stock;
 	unsigned int stock_pages;
@@ -1889,6 +1907,10 @@ static void __refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 		css_get(&memcg->css);
 		WRITE_ONCE(stock->cached, memcg);
 	}
+#ifdef CONFIG_CGTIER
+	if (tier + 1)
+		stock->nr_pages_per_tier[tier] += nr_pages;
+#endif
 	stock_pages = READ_ONCE(stock->nr_pages) + nr_pages;
 	WRITE_ONCE(stock->nr_pages, stock_pages);
 
@@ -1897,20 +1919,19 @@ static void __refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 }
 
 static void refill_stock(struct mem_cgroup *memcg,
-			unsigned int nr_pages)
+#ifdef CONFIG_CGTIER
+			 long tier,
+#endif
+			 unsigned int nr_pages)
 {
 	unsigned long flags;
 
 	if (!local_trylock_irqsave(&memcg_stock.stock_lock, flags)) {
-		/*
-		 * In case of unlikely failure to lock percpu stock_lock
-		 * uncharge memcg directly.
-		 */
 		if (mem_cgroup_is_root(memcg))
 			return;
 		page_counter_uncharge(&memcg->memory,
 #ifdef CONFIG_CGTIER
-				-1,
+				tier,
 #endif
 				nr_pages);
 		if (do_memsw_account())
@@ -1921,7 +1942,11 @@ static void refill_stock(struct mem_cgroup *memcg,
 					nr_pages);
 		return;
 	}
-	__refill_stock(memcg, nr_pages);
+	__refill_stock(memcg,
+#ifdef CONFIG_CGTIER
+		       tier,
+#endif
+		       nr_pages);
 	local_unlock_irqrestore(&memcg_stock.stock_lock, flags);
 }
 
@@ -2484,7 +2509,11 @@ force:
 
 done_restock:
 	if (batch > nr_pages)
-		refill_stock(memcg, batch - nr_pages);
+		refill_stock(memcg,
+#ifdef CONFIG_CGTIER
+			     tier,
+#endif
+			     batch - nr_pages);
 
 	/*
 	 * If the hierarchy is above the normal consumption range, schedule
@@ -3016,7 +3045,11 @@ static struct obj_cgroup *drain_obj_stock(struct memcg_stock_pcp *stock)
 
 			mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
 			memcg1_account_kmem(memcg, -nr_pages);
-			__refill_stock(memcg, nr_pages);
+			__refill_stock(memcg,
+#ifdef CONFIG_CGTIER
+               -1,
+#endif
+               nr_pages);
 
 			css_put(&memcg->css);
 		}
@@ -5231,7 +5264,12 @@ void mem_cgroup_uncharge_skmem(struct mem_cgroup *memcg, unsigned int nr_pages)
 
 	mod_memcg_state(memcg, MEMCG_SOCK, -nr_pages);
 
-	refill_stock(memcg, nr_pages);
+	mod_memcg_state(memcg, MEMCG_SOCK, -nr_pages);
+	refill_stock(memcg,
+#ifdef CONFIG_CGTIER
+             -1,
+#endif
+             nr_pages);
 }
 
 #ifdef CONFIG_CGTIER
