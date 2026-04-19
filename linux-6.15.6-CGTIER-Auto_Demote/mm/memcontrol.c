@@ -2006,13 +2006,18 @@ static unsigned long reclaim_high(struct mem_cgroup *memcg,
 					READ_ONCE(memcg->memory.high_per_tier[tier])))
 			continue;
 		if (!(tier + 1)) {
+			bool all_ok = true;
 			for (long i = 0; i < 4; i++) {
 				if (page_counter_read_per_tier(&memcg->memory, i) >
                                         READ_ONCE(memcg->memory.high_per_tier[i])) {
+					all_ok = false;
 					tier = i;
 					goto reclaim_path;
 				}
 			}
+			/* 모든 tier가 high 이하면 memory.high 체크로 넘어가지 않고 멈춤 */
+			if (all_ok)
+				continue;
 		}
 		if (!(tier+1) && (page_counter_read(&memcg->memory) <=
 		    READ_ONCE(memcg->memory.high)))
