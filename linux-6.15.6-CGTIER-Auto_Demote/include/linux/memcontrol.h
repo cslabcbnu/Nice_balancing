@@ -898,6 +898,8 @@ void mem_cgroup_handle_over_high(gfp_t gfp_mask
 #ifdef CONFIG_CGTIER
 extern struct task_struct *cgroup_migrate_kt;
 extern struct task_struct *reclaim_control_kt;
+extern struct mem_cgroup *vip_memcg;
+extern struct mem_cgroup *nonvip_memcg;
 #endif
 
 unsigned long mem_cgroup_get_max(struct mem_cgroup *memcg);
