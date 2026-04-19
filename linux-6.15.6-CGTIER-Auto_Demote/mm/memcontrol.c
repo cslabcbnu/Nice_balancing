@@ -5240,12 +5240,25 @@ void memcg_move_folio_tier(struct folio *folio, int src_nid, int dst_nid)
 
         src_tier = node_to_tier[src_nid];
         dst_tier = node_to_tier[dst_nid];
+
         if (src_tier == dst_tier)
                 return;
 
         memcg = folio_memcg(folio);
         if (!memcg)
                 return;
+
+#ifdef CONFIG_CGTIER
+        /* nonvip의 promote(CXL→DRAM)일 때만 high_per_tier[0] 체크 */
+        if (dst_tier == 0 && memcg == nonvip_memcg) {
+                unsigned long current_usage =
+                        page_counter_read_per_tier(&memcg->memory, 0);
+                unsigned long high =
+                        READ_ONCE(memcg->memory.high_per_tier[0]);
+                if (current_usage + folio_nr_pages(folio) > high)
+                        return;
+        }
+#endif
 
         page_counter_move_tier(&memcg->memory, src_tier, dst_tier,
                                folio_nr_pages(folio));
