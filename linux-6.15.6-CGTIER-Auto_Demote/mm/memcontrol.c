@@ -5957,7 +5957,12 @@ static int reclaim_control_kthread_fn(void *data)
                                    ? (pre_high_val - additional)
                                    : (MIN_LIMIT >> PAGE_SHIFT);
 
-            if (new_high != last_high_val) {
+            /* 1% 이상 변화할 때만 업데이트 (deadband) */
+            unsigned long diff = (new_high > last_high_val)
+                               ? (new_high - last_high_val)
+                               : (last_high_val - new_high);
+
+            if (diff > (total_dram_pages / 100)) {
                 page_counter_set_high_per_tier(&nonvip_memcg->memory,
                                                new_high, 0);
                 last_high_val = new_high;
